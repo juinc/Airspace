@@ -1,4 +1,4 @@
-import { GridCoordinate } from '../core/gridCoordinate.js';
+import { gridCoordinate } from '../core/gridCoordinate.js';
 
 export function createOffsetWaypoint(start, end, offsetAmount, axis = 'y') {
   const mid = {
@@ -9,5 +9,5 @@ export function createOffsetWaypoint(start, end, offsetAmount, axis = 'y') {
 
   mid[axis] += offsetAmount;
 
-  return new GridCoordinate(mid.x, mid.y, mid.z);
+  return new gridCoordinate(mid.x, mid.y, mid.z);
 }

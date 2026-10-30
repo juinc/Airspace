@@ -7,7 +7,7 @@ export const PathStyle = {
 
 let autoId = 0;
 
-export class FlightCurve {
+export class flightCurve {
   constructor({
     start,
     end,

@@ -6,12 +6,8 @@ import { createLights } from './core/lights.js';
 import { createControls } from './core/controls.js';
 import { createGridSystem } from './objects/grid.js';
 import { gridConfig } from './data/gridConfig.js';
-import { createFlightPathLine } from './objects/flightPath.js';
 import { createPlane, createPlaneAnimator } from './objects/plane.js';
-import { createCurve } from './utils/curveHelpers.js';
-import { routes } from './data/routes.js';
 import { flightCurves } from './data/flightRoutes.js';
-import { createPlane, createPlaneAnimator } from './objects/plane.js';
 
 const container = document.getElementById('app');
 

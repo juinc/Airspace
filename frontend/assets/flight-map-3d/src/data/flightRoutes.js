@@ -1,12 +1,12 @@
-import { GridCoordinate } from '../core/GridCoordinate.js';
-import { FlightCurve, PathStyle } from '../objects/FlightCurve.js';
+import { gridCoordinate } from '../core/gridCoordinate.js';
+import { flightCurve, PathStyle } from '../objects/flightCurve.js';
 import { createOffsetWaypoint } from '../utils/curveVariants.js';
 
-const origin = new GridCoordinate(1, 5, 1);
-const destination = new GridCoordinate(8, 3, 8);
+const origin = new gridCoordinate(1, 5, 1);
+const destination = new gridCoordinate(8, 3, 8);
 
 export const flightCurves = [
-  new FlightCurve({
+  new flightCurve({
     start: origin,
     end: destination,
     color: 0x2962ff,
@@ -14,7 +14,7 @@ export const flightCurves = [
     label: 'Main Route (Taken)',
   }),
 
-  new FlightCurve({
+  new flightCurve({
     start: origin,
     end: destination,
     waypoints: [createOffsetWaypoint(origin, destination, 2.5, 'y')],
@@ -23,7 +23,7 @@ export const flightCurves = [
     label: 'Alternative Route A',
   }),
 
-  new FlightCurve({
+  new flightCurve({
     start: origin,
     end: destination,
     waypoints: [createOffsetWaypoint(origin, destination, -2.5, 'x')],

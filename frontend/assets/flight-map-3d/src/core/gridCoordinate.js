@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { gridConfig } from '../data/gridConfig.js';
 import { getCubePosition } from '../utils/gridMath.js';
 
-export class GridCoordinate {
+export class gridCoordinate {
   constructor(x, y, z) {
     this.x = x;
     this.y = y;

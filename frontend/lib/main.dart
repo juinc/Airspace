@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-//import 'package:webview_flutter/webview_flutter.dart';
-//import 'package:three_js/three_js.dart';
+import 'package:frontend/pages/main_page.dart';
 
 void main() {
   runApp(const Airspace());
@@ -12,6 +11,7 @@ class Airspace extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Airspace',
+      home: const MainPage(),
     );
   }
 }

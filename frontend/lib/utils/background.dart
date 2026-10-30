@@ -1,13 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
-void main() {
-  runApp(const MaterialApp(
-    debugShowCheckedModeBanner: false,
-    home: ThreeJSView(),
-  ));
-}
-
 class ThreeJSView extends StatefulWidget {
   const ThreeJSView({super.key});
 
@@ -25,7 +18,7 @@ class _ThreeJSViewState extends State<ThreeJSView> {
     controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(Colors.black)
-      ..loadFlutterAsset('frontend/flight-map-3d/');
+      ..loadFlutterAsset('assets/flight-map-3d/dist/build/index.html');
   }
 
   @override

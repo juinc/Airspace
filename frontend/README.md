@@ -1,17 +1,15 @@
-# frontend
+# Airspace
 
-A new Flutter project.
+The Flutter app displays the Three.js flight scene from a bundled Vite build. Build
+the scene before running Flutter so the WebView asset is available:
 
-## Getting Started
+```sh
+cd assets/flight-map-3d
+npm install
+npm run build
+cd ../..
+flutter run
+```
 
-This project is a starting point for a Flutter application.
-
-A few resources to get you started if this is your first Flutter project:
-
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+The Vite build uses relative asset URLs so it can load from Flutter's asset
+bundle instead of requiring a development server.
