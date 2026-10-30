@@ -1,9 +1,5 @@
 import 'package:flutter/material.dart';
 
-//dino e gay
-//dino e gay 2
-//dino e gay 3
-
 void main() {
   runApp(const MyApp());
 }
