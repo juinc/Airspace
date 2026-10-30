@@ -4,7 +4,8 @@ import { createCamera } from './core/camera.js';
 import { createRenderer } from './core/renderer.js';
 import { createLights } from './core/lights.js';
 import { createControls } from './core/controls.js';
-import { createMapMesh } from './objects/mapMesh.js';
+import { createGridSystem } from './objects/grid.js';
+import { gridConfig } from './data/gridConfig.js';
 import { createFlightPathLine } from './objects/flightPath.js';
 import { createPlane, createPlaneAnimator } from './objects/plane.js';
 import { createCurve } from './utils/curveHelpers.js';
@@ -18,40 +19,36 @@ const renderer = createRenderer(container);
 const controls = createControls(camera, renderer.domElement);
 
 createLights(scene);
-scene.add(createMapMesh());
 
-// Build flight paths + planes from route data
+// Grid system replaces the old flat slab placeholder
+scene.add(createGridSystem(gridConfig));
+
+// Flight paths/planes stay as before — they now fly inside the grid
 const planeAnimators = [];
 
 routes.forEach(route => {
   const curve = createCurve(route.points);
 
-  const pathMesh = createFlightPathLine(curve, route.color);
-  scene.add(pathMesh);
+  scene.add(createFlightPathLine(curve, route.color));
 
   const planeMesh = createPlane();
   scene.add(planeMesh);
 
-  const animator = createPlaneAnimator(planeMesh, curve, 0.08);
-  planeAnimators.push(animator);
+  planeAnimators.push(createPlaneAnimator(planeMesh, curve, 0.08));
 });
 
-// Animation loop
 const clock = new THREE.Clock();
 
 function animate() {
   requestAnimationFrame(animate);
-
   const delta = clock.getDelta();
   planeAnimators.forEach(update => update(delta));
-
   controls.update();
   renderer.render(scene, camera);
 }
 
 animate();
 
-// Handle window resize
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
