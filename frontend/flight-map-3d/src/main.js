@@ -10,6 +10,8 @@ import { createFlightPathLine } from './objects/flightPath.js';
 import { createPlane, createPlaneAnimator } from './objects/plane.js';
 import { createCurve } from './utils/curveHelpers.js';
 import { routes } from './data/routes.js';
+import { flightCurves } from './data/flightRoutes.js';
+import { createPlane, createPlaneAnimator } from './objects/plane.js';
 
 const container = document.getElementById('app');
 
@@ -26,15 +28,14 @@ scene.add(createGridSystem(gridConfig));
 // Flight paths/planes stay as before — they now fly inside the grid
 const planeAnimators = [];
 
-routes.forEach(route => {
-  const curve = createCurve(route.points);
+flightCurves.forEach(flightCurve => {
+  scene.add(flightCurve.createMesh());
 
-  scene.add(createFlightPathLine(curve, route.color));
-
-  const planeMesh = createPlane();
-  scene.add(planeMesh);
-
-  planeAnimators.push(createPlaneAnimator(planeMesh, curve, 0.08));
+  if (flightCurve.taken) {
+    const planeMesh = createPlane();
+    scene.add(planeMesh);
+    planeAnimators.push(createPlaneAnimator(planeMesh, flightCurve.curve, 0.08));
+  }
 });
 
 const clock = new THREE.Clock();
