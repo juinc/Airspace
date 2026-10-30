@@ -2,13 +2,13 @@ import * as THREE from 'three';
 
 export function createCamera() {
   const camera = new THREE.PerspectiveCamera(
-    45,                                   // field of view
-    window.innerWidth / window.innerHeight, // aspect ratio
-    0.1,                                  // near clipping plane
-    1000                                  // far clipping plane
+    45,
+    window.innerWidth / window.innerHeight,
+    0.1,
+    1000
   );
 
-  camera.position.set(0, 12, 18); // above and behind, looking down at an angle
+  camera.position.set(14, 14, 20);
   camera.lookAt(0, 0, 0);
 
   return camera;
