@@ -4,6 +4,7 @@ import pytest
 
 from grid.coordinates import (
     FALLBACK_ALTITUDE_M,
+    VERTICAL_EXAGGERATION,
     altitude_to_scene_y,
     latlon_to_scene_xz,
 )
@@ -137,7 +138,7 @@ def test_route_metrics_measure_physical_vertical_distance_and_skip_null_exposure
     ]
 
     metrics = compute_route_metrics(route)
-    distance_km = math.sqrt(3**2 + 4**2 + 10**2)
+    distance_km = math.sqrt(3**2 + 4**2 + (80 / VERTICAL_EXAGGERATION) ** 2)
 
     assert metrics == {
         "distance_km": round(distance_km, 1),

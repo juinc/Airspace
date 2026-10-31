@@ -36,7 +36,9 @@
 
       #data-status,
       .metrics,
-      .scenario-control {
+      .scenario-control,
+      #altitude-legend,
+      #terrain-note {
         border: 1px solid rgba(220, 232, 240, 0.22);
         border-radius: 6px;
         background: rgba(13, 17, 23, 0.86);
@@ -102,6 +104,50 @@
         text-align: right;
       }
 
+      #altitude-legend {
+        position: fixed;
+        right: 14px;
+        bottom: 14px;
+        min-width: 180px;
+        padding: 9px 11px;
+        color: #eef2f5;
+        font-size: 11px;
+      }
+
+      .altitude-legend-title {
+        margin-bottom: 6px;
+        color: #a9bdca;
+        font-weight: 700;
+      }
+
+      .altitude-level-row {
+        display: grid;
+        grid-template-columns: 10px 1fr auto;
+        align-items: center;
+        gap: 7px;
+        min-height: 19px;
+      }
+
+      .altitude-level-swatch {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+      }
+
+      .altitude-level-row span:last-child {
+        color: #a9bdca;
+      }
+
+      #terrain-note {
+        position: fixed;
+        left: 14px;
+        bottom: 14px;
+        max-width: 320px;
+        padding: 8px 11px;
+        color: #ffd5a1;
+        font-size: 11px;
+      }
+
       @media (max-width: 700px) {
         #scene-overlay {
           inset: 8px 8px auto;
@@ -125,11 +171,15 @@
         Waiting for synthetic weather scenario...
       </div>
       <div class="scenario-control">
-        <label for="scenario-selector">Weather test scenario</label>
+        <label for="scenario-selector">Weather scenario</label>
         <select id="scenario-selector">
           <option value="heavy-storms">A lot more storms</option>
           <option value="random-storms">Random storms</option>
           <option value="clear-airspace">Clear airspace</option>
+          <option value="layered-random">
+            Random weather by altitude layer
+          </option>
+          <option value="real-meteo">Live Open-Meteo forecast</option>
         </select>
       </div>
       <section class="metrics" aria-label="Route metrics">
@@ -159,6 +209,19 @@
         </div>
       </section>
     </div>
+    <div id="terrain-note" role="note">
+      Terrain clearance is not validated. Not for flight use.
+    </div>
+    <section
+      id="altitude-legend"
+      class="metrics"
+      aria-label="Pressure altitude layers"
+    >
+      <div>
+        <div class="altitude-legend-title">Pressure layers</div>
+        <div id="altitude-level-list"></div>
+      </div>
+    </section>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

@@ -168,3 +168,29 @@ def test_scene_endpoint_allows_local_frontend_cors():
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
+def test_real_meteo_scenario_uses_full_live_scene(monkeypatch):
+    requests = []
+
+    def fake_scene_data(req):
+        requests.append(req)
+        return {"meta": {"source": "live"}}
+
+    monkeypatch.setattr(main, "test_scene_data", fake_scene_data)
+
+    response = client.get("/test-scenarios/real-meteo?mode=Lower-exposure")
+
+    assert response.status_code == 200
+    assert requests[0].test_mode is False
+    assert requests[0].mode == "Lower-exposure"
+    assert response.json()["meta"]["scenario_title"] == "Open-Meteo forecast"
+
+
+def test_full_scene_marks_cached_real_weather_as_cached(monkeypatch):
+    monkeypatch.setattr(main, "load_cache", lambda key: {"meta": {"source": "live"}})
+
+    response = client.post("/test-scene-data", json={"test_mode": False})
+
+    assert response.status_code == 200
+    assert response.json()["meta"]["source"] == "cache"

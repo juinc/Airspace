@@ -65,3 +65,22 @@ def test_detect_events_returns_empty_list_when_no_match():
                             lat_values=[0.0, 1.0], lon_values=[0.0, 1.0],
                             level=300, target_label="severe_storm")
     assert events == []
+
+
+def test_detect_events_uses_level_specific_weather_when_available():
+    point = _make_point(
+        cape=0,
+        precipitation=0,
+        cloud_cover=0,
+        vertical_velocity=0,
+        wind_speed=0,
+    )
+    point["levels"][300].update(
+        {"cape": 1200, "vertical_velocity": 2, "wind_speed": 50}
+    )
+
+    events = detect_events(
+        [point], 1, 1, [45.0], [24.0], 300, "thunderstorm"
+    )
+
+    assert len(events) == 1

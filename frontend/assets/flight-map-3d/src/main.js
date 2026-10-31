@@ -11,6 +11,7 @@ import {
     alignAirportsToMap,
     createSceneDataGroup,
     disposeSceneDataGroup,
+    renderAltitudeLegend,
     renderMeta,
     renderMetrics,
 } from './sceneData.js';
@@ -29,7 +30,13 @@ const scenarioSelector = document.getElementById('scenario-selector');
 const status = document.getElementById('data-status');
 const query = new URLSearchParams(window.location.search);
 const initialScenario = query.get('scenario') || 'heavy-storms';
-const scenarios = new Set(['random-storms', 'heavy-storms', 'clear-airspace']);
+const scenarios = new Set([
+    'random-storms',
+    'heavy-storms',
+    'clear-airspace',
+    'layered-random',
+    'real-meteo',
+]);
 scenarioSelector.value = scenarios.has(initialScenario) ? initialScenario : 'heavy-storms';
 
 let activeDataGroup;
@@ -64,6 +71,7 @@ async function loadScenario() {
         activeDataGroup = nextGroup;
         scene.add(activeDataGroup);
         alignAirportsToMap(activeDataGroup, mapMesh);
+        renderAltitudeLegend(payload.grid || []);
         renderMetrics(payload.routes?.metrics || {});
         renderMeta({ ...payload.meta, event_count: payload.events?.length || 0 });
 

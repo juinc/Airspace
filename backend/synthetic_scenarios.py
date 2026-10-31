@@ -13,11 +13,13 @@ SCENARIO_SEEDS = {
     "random-storms": 4621,
     "heavy-storms": 91437,
     "clear-airspace": 187,
+    "layered-random": 80631,
 }
 SCENARIO_TITLES = {
     "random-storms": "Random storms, rain, thunderstorms, and severe storms",
     "heavy-storms": "High-density synthetic storm field",
     "clear-airspace": "Clear airspace",
+    "layered-random": "Independent random weather by altitude layer",
 }
 
 
@@ -35,7 +37,20 @@ def build_synthetic_grid(scenario, config):
         config["lon_step"],
     )
     rng = random.Random(SCENARIO_SEEDS[scenario])
-    if scenario == "random-storms":
+    layer_weather_cells = {}
+    if scenario == "layered-random":
+        weather_fractions = (0.72, 0.5, 0.28, 0.08)
+        for level, weather_fraction in zip(PRESSURE_LEVELS, weather_fractions):
+            shuffled_indices = list(range(len(points)))
+            rng.shuffle(shuffled_indices)
+            for index in shuffled_indices[: round(len(points) * weather_fraction)]:
+                layer_weather_cells[(index, level)] = rng.choices(
+                    ("rain", "thunderstorm", "severe_storm"),
+                    weights=(0.2, 0.4, 0.4),
+                    k=1,
+                )[0]
+        weather_cell_count = 0
+    elif scenario == "random-storms":
         weather_cell_count = round(len(points) * 0.2)
     elif scenario == "heavy-storms":
         weather_cell_count = round(len(points) * 0.78)
@@ -70,19 +85,37 @@ def build_synthetic_grid(scenario, config):
             }
         )
         for level in PRESSURE_LEVELS:
+            layer_weather_type = layer_weather_cells.get((index, level), weather_type)
+            if scenario == "layered-random":
+                layer_cape, layer_precipitation, layer_vertical_velocity, layer_wind_speed = (
+                    _weather_values(layer_weather_type, rng)
+                )
+                layer_humidity = rng.uniform(35, 75) if layer_weather_type != "clear" else 0
+                layer_cloud_cover = rng.uniform(35, 100) if layer_weather_type != "clear" else 0
+            else:
+                layer_cape = cape
+                layer_precipitation = precipitation
+                layer_vertical_velocity = vertical_velocity
+                layer_wind_speed = wind_speed
+                layer_humidity = humidity
+                layer_cloud_cover = cloud_cover
+
             point["levels"][level] = {
                 "temperature": None,
-                "wind_speed": round(wind_speed, 1),
+                "wind_speed": round(layer_wind_speed, 1),
                 "wind_direction": None,
-                "vertical_velocity": round(vertical_velocity, 2),
+                "vertical_velocity": round(layer_vertical_velocity, 2),
                 "geopotential_height": None,
-                "relative_humidity": round(humidity, 1),
+                "relative_humidity": round(layer_humidity, 1),
+                "cape": round(layer_cape, 1),
+                "precipitation": round(layer_precipitation, 2),
+                "cloud_cover": round(layer_cloud_cover, 1),
                 "exposure_score": weather_exposure_score(
-                    cape=cape,
-                    precipitation=precipitation,
-                    vertical_velocity=vertical_velocity,
-                    humidity=humidity,
-                    cloud_cover=cloud_cover,
+                    cape=layer_cape,
+                    precipitation=layer_precipitation,
+                    vertical_velocity=layer_vertical_velocity,
+                    humidity=layer_humidity,
+                    cloud_cover=layer_cloud_cover,
                 ),
             }
 

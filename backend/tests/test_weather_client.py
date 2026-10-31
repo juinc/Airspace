@@ -1,4 +1,4 @@
-from weather.client import OPEN_METEO_URL, build_variable_list, fetch_forecast
+from weather.client import OPEN_METEO_URL, build_variable_list, fetch_forecast, parse_response
 
 
 def test_fetch_forecast_posts_all_coordinates_in_json_body(monkeypatch):
@@ -33,3 +33,21 @@ def test_fetch_forecast_posts_all_coordinates_in_json_body(monkeypatch):
     assert calls["json"]["models"] == ["ecmwf_aifs025_single"]
     assert calls["json"]["forecast_days"] == 2
     assert calls["timeout"] == 30
+
+
+def test_parse_response_preserves_vertical_velocity_for_each_level():
+    raw = {
+        "hourly": {
+            "time": ["2026-10-31T12:00"],
+            "cape": [1200],
+            "precipitation": [0],
+            "cloud_cover": [40],
+            "vertical_velocity_300hPa": [2.1],
+            "relative_humidity_300hPa": [65],
+            "wind_speed_300hPa": [70],
+        }
+    }
+
+    result = parse_response(raw, [45.0], [24.0], [300])
+
+    assert result[0]["levels"][300]["vertical_velocity"] == 2.1

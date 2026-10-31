@@ -45,8 +45,8 @@ def build_classification_grid(grid_points, n_lats, n_lons, level):
         row, col = divmod(i, n_lons)
         level_data = point["levels"][level]
         labels[row, col] = classify_point(
-            cape=point.get("cape"),
-            precipitation=point.get("precipitation"),
+            cape=level_data.get("cape", point.get("cape")),
+            precipitation=level_data.get("precipitation", point.get("precipitation")),
             vertical_velocity=level_data.get("vertical_velocity"),
             wind_speed=level_data.get("wind_speed"),
         )

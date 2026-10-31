@@ -135,6 +135,17 @@ def test_clear_airspace_scenario_has_no_weather_events_and_still_routes():
     assert len(routes["optimized"]) >= 3
 
 
+def test_layered_random_weather_varies_by_level_and_astar_uses_vertical_path():
+    grid = build_synthetic_grid("layered-random", DEFAULT_CONFIG)
+    routes = build_synthetic_routes(grid, ROUTE)
+
+    assert any(
+        len({level["exposure_score"] for level in point["levels"].values()}) > 1
+        for point in grid
+    )
+    assert len({waypoint["y"] for waypoint in routes["optimized"]}) > 1
+
+
 def test_heavy_storm_scenario_endpoint_returns_json_without_live_weather(monkeypatch):
     monkeypatch.setattr(
         main,

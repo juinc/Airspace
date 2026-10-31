@@ -309,7 +309,9 @@ def test_scene_data(req: GridRequest):
     cached = load_cache(cache_key)
     if cached and not req.test_mode:
         cached.setdefault("airports", _scene_airports())
-        cached.setdefault("meta", {}).setdefault("map_bounds", _scene_map_bounds())
+        cached_meta = cached.setdefault("meta", {})
+        cached_meta["source"] = "cache"
+        cached_meta.setdefault("map_bounds", _scene_map_bounds())
         return cached
 
     _, grid_results = _scene_grid(req)
@@ -365,7 +367,14 @@ def optimize(req: OptimizeRequest):
 
 @app.get("/test-scenarios/{scenario}")
 def test_scenario(scenario: str, mode: str = "Balanced"):
-    """Return a deterministic, country-wide synthetic weather scene for testing."""
+    """Return a synthetic scenario or a live Open-Meteo scene."""
+    if scenario == "real-meteo":
+        payload = test_scene_data(GridRequest(test_mode=False, mode=mode))
+        meta = payload.setdefault("meta", {})
+        meta["scenario"] = scenario
+        meta["scenario_title"] = "Open-Meteo forecast"
+        return payload
+
     try:
         grid = build_synthetic_grid(scenario, DEFAULT_CONFIG)
         routes = build_synthetic_routes(grid, ROUTE, mode)

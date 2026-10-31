@@ -102,6 +102,7 @@ def parse_response(raw, lat_list, lon_list, pressure_levels, forecast_index=0):
                 "temperature": get("temperature"),
                 "wind_speed": get("wind_speed"),
                 "wind_direction": get("wind_direction"),
+                "vertical_velocity": vertical_velocity,
                 "geopotential_height": get("geopotential_height"),
                 "exposure_score": score,
             }
