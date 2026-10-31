@@ -11,6 +11,22 @@ def test_health_endpoint():
     assert response.json() == {"status": "ok"}
 
 
+def test_default_scene_grid_covers_romania_bounds():
+    config = main.DEFAULT_CONFIG
+    map_bounds = main.ROMANIA_MAP_GEO_BOUNDS
+    points = main.build_horizontal_grid(
+        config["min_lat"], config["max_lat"],
+        config["min_lon"], config["max_lon"],
+        config["lat_step"], config["lon_step"],
+    )
+
+    assert len(points) == 861
+    assert config["min_lat"] <= map_bounds["min_lat"]
+    assert config["max_lat"] >= map_bounds["max_lat"]
+    assert config["min_lon"] <= map_bounds["min_lon"]
+    assert config["max_lon"] >= map_bounds["max_lon"]
+
+
 def test_test_weather_endpoint_uses_fetch_and_parse(monkeypatch):
     fake_parsed = [{"lat": 44.57, "lon": 26.10, "forecast_time": "2024-01-01T00:00", "levels": {}}]
 

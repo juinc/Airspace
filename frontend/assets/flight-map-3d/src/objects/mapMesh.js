@@ -15,7 +15,7 @@ export function createMapMesh(model, grid, mapBounds) {
     const scaleX = (sceneBounds.max_x - sceneBounds.min_x) / modelSize.x;
     const scaleZ = (sceneBounds.max_z - sceneBounds.min_z) / modelSize.z;
     model.scale.x *= scaleX;
-    model.scale.y *= (scaleX + scaleZ) / 2;
+    model.scale.y *= (scaleX + scaleZ);
     model.scale.z *= scaleZ;
     model.updateWorldMatrix(true, true);
 
@@ -24,8 +24,6 @@ export function createMapMesh(model, grid, mapBounds) {
     model.position.x += (sceneBounds.min_x + sceneBounds.max_x) / 2 - center.x;
     model.position.z += (sceneBounds.min_z + sceneBounds.max_z) / 2 - center.z;
     model.position.y += getMapPlaneY() - fittedBounds.max.y;
-
-    model.scale.y *= 2;
 
     model.traverse(object => {
         if (object.isMesh) {
