@@ -1,3 +1,4 @@
+import math
 from typing import Optional
 
 
@@ -5,6 +6,14 @@ def normalize(value: Optional[float], min_val: float, max_val: float) -> Optiona
     """Clamp and scale a raw value into 0-1. Returns None if value is missing."""
     if value is None:
         return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value):
+        return None
+    if max_val <= min_val:
+        raise ValueError("max_val must be greater than min_val")
     clamped = max(min_val, min(max_val, value))
     return (clamped - min_val) / (max_val - min_val)
 

@@ -18,7 +18,7 @@ const EVENT_COLORS = {
 };
 const PRESSURE_LEVEL_COLORS = [0x43c1c6, 0x7abf78, 0xe2b65f, 0xe77c68];
 
-export function createSceneDataGroup(payload, planeTemplate) {
+export function createSceneDataGroup(payload, planeTemplate, initialProgress = 0) {
     const group = new THREE.Group();
     renderGrid(payload.grid || [], group);
     renderAltitudeLayers(payload.grid || [], group);
@@ -27,6 +27,9 @@ export function createSceneDataGroup(payload, planeTemplate) {
 
     const routes = payload.routes || {};
     renderRoute(routes.baseline, 0x3399ff, PathStyle.DASHED, group);
+    if (payload.weather_update?.replanned) {
+        renderRoute(routes.previous_optimized, 0x9aa6b2, PathStyle.DASHED, group);
+    }
     const optimizedCurve = renderRoute(routes.optimized, 0xff6633, PathStyle.SOLID, group);
     if (optimizedCurve) {
         const plane = instantiatePlane(planeTemplate);
@@ -44,7 +47,14 @@ export function createSceneDataGroup(payload, planeTemplate) {
             });
         });
         group.add(plane);
-        group.userData.update = createPlaneAnimator(plane, optimizedCurve.curve, 0.035);
+        const updatePlane = createPlaneAnimator(
+            plane,
+            optimizedCurve.curve,
+            0.035,
+            initialProgress,
+        );
+        group.userData.update = updatePlane;
+        group.userData.getFlightProgress = updatePlane.getProgress;
     }
     return group;
 }

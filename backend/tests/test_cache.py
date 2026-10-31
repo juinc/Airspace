@@ -34,3 +34,19 @@ def test_cache_corrupted_file_does_not_crash(tmp_path, monkeypatch):
     cache_file = tmp_path / "weather_cache.json"
     cache_file.write_text("not valid json {{{")
     assert cache_module.load_cache("anything") is None
+
+
+def test_cache_key_includes_request_context():
+    first = cache_module.build_cache_key("forecast", bounds=[43.75, 47.5], mode="balanced")
+    second = cache_module.build_cache_key("forecast", bounds=[43.75, 47.5], mode="fastest")
+
+    assert first != second
+
+
+def test_cache_discards_malformed_entries(tmp_path, monkeypatch):
+    _point_cache_at(monkeypatch, tmp_path)
+    (tmp_path / "weather_cache.json").write_text(
+        '{"bad":{"timestamp":"not-a-time","payload":{"a":1}}}'
+    )
+
+    assert cache_module.load_cache("bad") is None

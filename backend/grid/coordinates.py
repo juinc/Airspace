@@ -66,7 +66,11 @@ def resolve_altitude_m(level_data: dict, pressure_level: int) -> float:
     forecast didn't return a value for this field.
     """
     geopotential_m = level_data.get("geopotential_height")
-    if geopotential_m is not None:
+    try:
+        geopotential_m = float(geopotential_m)
+    except (TypeError, ValueError):
+        geopotential_m = None
+    if geopotential_m is not None and math.isfinite(geopotential_m) and geopotential_m > 0:
         return geopotential_m
     return FALLBACK_ALTITUDE_M.get(pressure_level)
 

@@ -22,6 +22,11 @@ def test_classify_point_severe_storm_via_high_wind():
     assert classify_point(cape=1200, precipitation=0, vertical_velocity=2, wind_speed=150) == "severe_storm"
 
 
+def test_classify_point_does_not_turn_missing_fields_into_clear_weather():
+    assert classify_point(cape=None, precipitation=None, vertical_velocity=None, wind_speed=None) == "unknown"
+    assert classify_point(cape=float("nan"), precipitation=0, vertical_velocity=0, wind_speed=0) == "unknown"
+
+
 def _make_point(cape, precipitation, cloud_cover, vertical_velocity, wind_speed, level=300):
     return {
         "cape": cape,
@@ -54,6 +59,21 @@ def test_detect_events_groups_adjacent_cells_into_one_cluster():
     assert event["cell_count"] == 2
     assert event["centroid"]["lat"] == 0.5
     assert event["centroid"]["lon"] == 0.0
+    assert event["severity"] == "heavy"
+
+
+def test_detect_events_merges_diagonally_adjacent_cells():
+    grid_points = [
+        _make_point(0, 5, 0, 0, 0),
+        _make_point(0, 0, 0, 0, 0),
+        _make_point(0, 0, 0, 0, 0),
+        _make_point(0, 5, 0, 0, 0),
+    ]
+
+    events = detect_events(grid_points, 2, 2, [45.0, 45.25], [24.0, 24.25], 300, "rain")
+
+    assert len(events) == 1
+    assert events[0]["cell_count"] == 2
 
 
 def test_detect_events_returns_empty_list_when_no_match():
@@ -84,3 +104,28 @@ def test_detect_events_uses_level_specific_weather_when_available():
     )
 
     assert len(events) == 1
+
+
+def test_detect_events_uses_real_level_altitude_and_keeps_levels_independent():
+    point = _make_point(0, 0, 0, 0, 0)
+    point["levels"][300].update({
+        "cape": 1200,
+        "vertical_velocity": 2,
+        "wind_speed": 50,
+        "geopotential_height": 9800,
+        "altitude_km": 9.8,
+    })
+    point["levels"][200] = {
+        "cape": 0,
+        "precipitation": 0,
+        "vertical_velocity": 0,
+        "wind_speed": 0,
+        "geopotential_height": 11600,
+        "altitude_km": 11.6,
+    }
+
+    thunderstorm_events = detect_events([point], 1, 1, [45.0], [24.0], 300, "thunderstorm")
+    upper_layer_events = detect_events([point], 1, 1, [45.0], [24.0], 200, "thunderstorm")
+
+    assert thunderstorm_events[0]["centroid"]["altitude_km"] == 9.8
+    assert upper_layer_events == []
