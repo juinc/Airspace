@@ -26,4 +26,7 @@ export class gridCoordinate {
   toString() {
     return `(${this.x}, ${this.y}, ${this.z})`;
   }
+    static fromPlain(obj) {
+    return new gridCoordinate(obj.x, obj.y, obj.z);
+  }
 }
