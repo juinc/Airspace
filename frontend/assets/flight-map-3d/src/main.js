@@ -57,9 +57,9 @@ async function loadScenario(routeProgress = 0.35) {
 
     try {
         const [payload, mapModel, planeTemplate] = await Promise.all([
-            scenario === 'drastic-weather-change' && activePayload
-                ? replanWeatherScene(activePayload, routeProgress)
-                : fetchSceneData(scenario, routeProgress),
+            scenario === 'drastic-weather-change' && activePayload ?
+            replanWeatherScene(activePayload, routeProgress) :
+            fetchSceneData(scenario, routeProgress),
             mapPromise,
             planeTemplatePromise,
         ]);
@@ -100,9 +100,9 @@ async function loadScenario(routeProgress = 0.35) {
 
 scenarioSelector.addEventListener('change', () => {
     window.clearTimeout(weatherUpdateTimer);
-    const routeProgress = activeDataGroup && activeDataGroup.userData.getFlightProgress
-        ? activeDataGroup.userData.getFlightProgress()
-        : 0.35;
+    const routeProgress = activeDataGroup && activeDataGroup.userData.getFlightProgress ?
+        activeDataGroup.userData.getFlightProgress() :
+        0.35;
     const nextQuery = new URLSearchParams(window.location.search);
     nextQuery.set('scenario', scenarioSelector.value);
     window.history.replaceState(null, '', `${window.location.pathname}?${nextQuery}`);
@@ -143,9 +143,9 @@ async function runWeatherUpdate() {
     const previousPayload = activePayload;
     if (!previousPayload || scenarioSelector.value !== 'drastic-weather-change') return;
 
-    const progress = activeDataGroup && activeDataGroup.userData.getFlightProgress
-        ? activeDataGroup.userData.getFlightProgress()
-        : 0;
+    const progress = activeDataGroup && activeDataGroup.userData.getFlightProgress ?
+        activeDataGroup.userData.getFlightProgress() :
+        0;
     const weatherSeed = Math.floor(Math.random() * 2147483647);
     const updateNumber = ++weatherUpdateNumber;
     status.textContent = `Checking weather change ${updateNumber}...`;
@@ -157,13 +157,13 @@ async function runWeatherUpdate() {
             weatherSeed,
         );
         if (
-            activePayload !== previousPayload
-            || scenarioSelector.value !== 'drastic-weather-change'
+            activePayload !== previousPayload ||
+            scenarioSelector.value !== 'drastic-weather-change'
         ) return;
 
-        nextPayload.meta.trajectory_status = nextPayload.weather_update.replanned
-            ? `Weather update ${updateNumber}: ${nextPayload.meta.trajectory_status}`
-            : `Weather update ${updateNumber}: route unchanged below drastic threshold`;
+        nextPayload.meta.trajectory_status = nextPayload.weather_update.replanned ?
+            `Weather update ${updateNumber}: ${nextPayload.meta.trajectory_status}` :
+            `Weather update ${updateNumber}: route unchanged below drastic threshold`;
         applyScenePayload(
             nextPayload,
             nextPayload.weather_update.replanned ? 0 : progress,
