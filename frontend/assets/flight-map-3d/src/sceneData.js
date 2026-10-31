@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { FlightCurve, PathStyle } from './objects/flightCurve.js';
+import { createPlaneAnimator, instantiatePlane } from './objects/plane.js';
 
 const EXPOSURE_COLORS = {
     low: 0x35A66B,
@@ -15,15 +17,33 @@ const EVENT_COLORS = {
     default: 0xffffff,
 };
 
-export function createSceneDataGroup(payload) {
+export function createSceneDataGroup(payload, planeTemplate) {
     const group = new THREE.Group();
     renderGrid(payload.grid || [], group);
     renderEvents(payload.events || [], group);
     renderAirports(payload.airports || [], group);
 
     const routes = payload.routes || {};
-    renderRoute(routes.baseline, 0x3399ff, group);
-    renderRoute(routes.optimized, 0xff6633, group);
+    renderRoute(routes.baseline, 0x3399ff, PathStyle.DASHED, group);
+    const optimizedCurve = renderRoute(routes.optimized, 0xff6633, PathStyle.SOLID, group);
+    if (optimizedCurve) {
+        const plane = instantiatePlane(planeTemplate);
+        const planeBounds = new THREE.Box3().setFromObject(plane);
+        const planeSize = planeBounds.getSize(new THREE.Vector3());
+        const largestDimension = Math.max(planeSize.x, planeSize.y, planeSize.z);
+        if (largestDimension > 0) plane.scale.multiplyScalar(40);
+        plane.traverse(object => {
+            if (!object.isMesh) return;
+            object.renderOrder = 10000;
+            const materials = Array.isArray(object.material) ? object.material : [object.material];
+            materials.forEach(material => {
+                material.depthTest = false;
+                material.depthWrite = false;
+            });
+        });
+        group.add(plane);
+        group.userData.update = createPlaneAnimator(plane, optimizedCurve.curve, 0.035);
+    }
     return group;
 }
 
@@ -174,13 +194,17 @@ function renderAirports(airports, group) {
     });
 }
 
-function renderRoute(waypoints, color, group) {
-    if (!Array.isArray(waypoints) || waypoints.length < 2 || !waypoints.every(hasPosition)) return;
+function renderRoute(waypoints, color, style, group) {
+    if (!Array.isArray(waypoints) || waypoints.length < 2 || !waypoints.every(hasPosition)) return null;
 
-    const points = waypoints.map(waypoint => new THREE.Vector3(waypoint.x, waypoint.y, waypoint.z));
-    const geometry = new THREE.BufferGeometry().setFromPoints(points);
-    const material = new THREE.LineBasicMaterial({ color });
-    group.add(new THREE.Line(geometry, material));
+    const curve = FlightCurve.fromPath({
+        path: waypoints,
+        color,
+        style,
+        taken: style === PathStyle.SOLID,
+    });
+    group.add(curve.createMesh());
+    return curve;
 }
 
 function coordinateStep(points, axis) {
