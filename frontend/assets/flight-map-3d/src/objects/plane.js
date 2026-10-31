@@ -1,4 +1,23 @@
 import * as THREE from 'three';
+import { planeModelConfig } from '../data/modelConfig.js';
+import { loadModel } from '../loaders/modelLoader.js';
+
+const modelPath = `${import.meta.env.BASE_URL}${planeModelConfig.path.replace(/^\/+/, '')}`;
+
+export function createPlaneTemplate() {
+  return loadModel(modelPath);
+}
+
+export function instantiatePlane(template) {
+  const plane = new THREE.Group();
+  const model = template.clone(true);
+
+  model.scale.multiplyScalar(planeModelConfig.scale);
+  model.rotation.y += planeModelConfig.rotationOffsetY;
+  plane.add(model);
+
+  return plane;
+}
 
 export function createPlane() {
   const geometry = new THREE.ConeGeometry(0.15, 0.5, 8);

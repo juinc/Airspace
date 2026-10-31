@@ -6,7 +6,7 @@ class ThreeView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const HtmlElementView.fromTagName(
+    return HtmlElementView.fromTagName(
       tagName: 'iframe',
       onElementCreated: _configureFrame,
     );
