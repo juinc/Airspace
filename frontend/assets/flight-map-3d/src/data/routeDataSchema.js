@@ -7,6 +7,8 @@
  *   color: number,        // hex color, e.g. 0x2962ff
  *   style: 'solid' | 'dashed',
  *   taken: boolean,
- *   path: [ { x: number, y: number, z: number }, ... ]  // already-optimized, in order
+ *   path: [ { x: number, y: number, z: number }, ... ]  // ordered waypoint path
+ *   // Or provide reusable ordered waypoint paths that join at shared endpoints:
+ *   segments?: [ [ { x, y, z }, ... ], ... ]
  * }
  */
