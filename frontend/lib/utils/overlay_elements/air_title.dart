@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 class AirTitle extends StatelessWidget {
   const AirTitle({super.key});
@@ -8,7 +9,6 @@ class AirTitle extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        // Icon badge
         Container(
           padding: const EdgeInsets.all(8),
           decoration: BoxDecoration(
@@ -34,27 +34,23 @@ class AirTitle extends StatelessWidget {
 
         const SizedBox(width: 10),
 
-        // Wordmark
-        Column(
+                Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text(
+            Text(
               'Airspace',
-              style: TextStyle(
+              style: GoogleFonts.playwriteItTrad(
                 color: Colors.white,
                 fontSize: 22,
                 fontWeight: FontWeight.w900,
-                letterSpacing: 3,
-                height: 1,
               ),
             ),
             Container(
               margin: const EdgeInsets.only(top: 2),
               width: 100,
               height: 2,
-              color: const Color.fromARGB(255, 21, 83, 153)
-                  .withValues(alpha: 0.6),
+              color: const Color.fromARGB(255, 21, 83, 153).withValues(alpha: 0.6),
             ),
           ],
         ),

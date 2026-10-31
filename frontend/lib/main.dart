@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:webview_windows/webview_windows.dart';
+import 'package:webview_flutter_windows/webview_flutter_windows.dart';
 import 'three_view.dart';
 import 'package:frontend/utils/overlay_3js.dart';
 

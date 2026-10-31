@@ -36,8 +36,9 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^2.0.0
   three_js: ^0.3.0
-  # webview_windows: ^0.4.0
+  webview_windows: ^0.4.0
   webview_flutter_windows: ^1.0.0
+  google_fonts: ^9.0.0
 
 dev_dependencies:
   flutter_test:
