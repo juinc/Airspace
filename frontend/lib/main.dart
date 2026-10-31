@@ -23,9 +23,7 @@ class Airspace extends StatelessWidget {
 import 'package:flutter/material.dart';
 import 'package:webview_windows/webview_windows.dart';
 import 'three_view.dart';
-
-// Inside your Scaffold:
-
+import 'package:frontend/pages/overlay.dart';
 
 void main() {
   runApp(const MaterialApp(
@@ -84,7 +82,12 @@ class _ThreeJSViewState extends State<ThreeJSView> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: const ThreeView(),
+      body: Stack(
+        children: [
+          const ThreeView(),
+          Overlay_3js(),
+        ],
+      ),
     );
   }
 }
