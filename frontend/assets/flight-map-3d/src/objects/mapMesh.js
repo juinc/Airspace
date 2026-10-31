@@ -18,6 +18,8 @@ export function createMapMesh(model, gridConfig) {
     model.position.z -= center.z;
     model.position.y += getMapPlaneY(gridConfig) - fittedBounds.min.y;
 
+    model.scale.y *= 2;
+
     model.traverse(object => {
         if (object.isMesh) {
             object.castShadow = true;
