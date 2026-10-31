@@ -12,36 +12,50 @@ export function loadWeatherMeshKit() {
 
 async function buildKit() {
   const kit = {};
+  const partsByPath = new Map();
 
   await Promise.all(
     Object.entries(weatherModelConfig).map(async ([category, config]) => {
+      if (!config.path) {
+        kit[category] = [];
+        return;
+      }
+
       try {
-        const rawModel = await loadModel(config.path);
-        const container = normalizeToUnitCube(rawModel, config);
-        container.updateWorldMatrix(true, true);
-
-        const parts = [];
-        container.traverse(child => {
-          if (!child.isMesh) return;
-          child.geometry.userData.shared = true;
-          const materials = Array.isArray(child.material) ? child.material : [child.material];
-          materials.forEach(m => { m.userData.shared = true; });
-          parts.push({
-            geometry: child.geometry,
-            material: child.material,
-            matrix: child.matrixWorld.clone(),
-          });
-        });
-
-        kit[category] = parts;
+        let partsPromise = partsByPath.get(config.path);
+        if (!partsPromise) {
+          partsPromise = loadModel(config.path).then(rawModel => createModelParts(rawModel, config));
+          partsByPath.set(config.path, partsPromise);
+        }
+        kit[category] = await partsPromise;
       } catch (error) {
         console.error(`Weather model "${category}" failed to load from ${config.path}:`, error);
-        kit[category] = []; // leave this category empty instead of crashing everything
+        kit[category] = [];
       }
     })
   );
 
   return kit;
+}
+
+function createModelParts(rawModel, config) {
+  const container = normalizeToUnitCube(rawModel, config);
+  container.updateWorldMatrix(true, true);
+
+  const parts = [];
+  container.traverse(child => {
+    if (!child.isMesh) return;
+    child.geometry.userData.shared = true;
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    materials.forEach(material => { material.userData.shared = true; });
+    parts.push({
+      geometry: child.geometry,
+      material: child.material,
+      matrix: child.matrixWorld.clone(),
+    });
+  });
+
+  return parts;
 }
 
 function normalizeToUnitCube(rawModel, config) {

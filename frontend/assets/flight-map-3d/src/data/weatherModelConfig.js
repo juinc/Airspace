@@ -1,8 +1,6 @@
 export const weatherModelConfig = {
   low: {
-    path: '/models/weather/clear.glb',
-    fillRatio: 0.85,
-    rotationOffsetY: 0,
+    path: null,
   },
   moderate: {
     path: '/models/weather/cloudy.glb',
@@ -15,7 +13,7 @@ export const weatherModelConfig = {
     rotationOffsetY: 0,
   },
   high: {
-    path: '/models/weather/danger.glb',
+    path: '/models/weather/rain.glb',
     fillRatio: 0.85,
     rotationOffsetY: 0,
   },

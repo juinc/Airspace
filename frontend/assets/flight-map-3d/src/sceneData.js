@@ -5,27 +5,12 @@ import { buildWeatherColumns } from './utils/weatherLayers.js';
 import { pointsFromGrid } from './utils/weatherPointAdapters.js';
 import { createWeatherSpanMarkers } from './utils/weatherSpanMarkers.js';
 
-const EXPOSURE_COLORS = {
-    low: 0x35A66B,
-    moderate: 0xC9BE37,
-    elevated: 0xE68A37,
-    high: 0xCE4C4C,
-    unknown: 0x888888,
-};
-
-const EVENT_COLORS = {
-    rain: 0x3399ff,
-    thunderstorm: 0xffaa00,
-    severe_storm: 0xff2200,
-    default: 0xffffff,
-};
 const PRESSURE_LEVEL_COLORS = [0x43c1c6, 0x7abf78, 0xe2b65f, 0xe77c68];
 
 export function createSceneDataGroup(payload, planeTemplate, initialProgress = 0, weatherMeshKit = null) {
     const group = new THREE.Group();
     renderGrid(payload.grid || [], group, weatherMeshKit);
     renderAltitudeLayers(payload.grid || [], group);
-    renderEvents(payload.events || [], group);
     renderAirports(payload.airports || [], group);
 
 
@@ -178,6 +163,8 @@ export function renderAltitudeLegend(grid) {
 }
 
 function renderGrid(grid, group, weatherMeshKit) {
+    if (!weatherMeshKit) return;
+
     const points = pointsFromGrid(grid);
     if (points.length === 0) return;
 
@@ -187,25 +174,9 @@ function renderGrid(grid, group, weatherMeshKit) {
     if (width === null || depth === null) return;
 
     const layerHeight = coordinateStep(points, 'y') || Math.min(width, depth);
-
-    // Keep rendering a category when its model is missing or fails to load.
-    let fallbackGeometry;
-    const completeKit = Object.fromEntries(
-        Object.entries(EXPOSURE_COLORS).map(([category, color]) => {
-            const modelParts = weatherMeshKit && weatherMeshKit[category];
-            if (modelParts && modelParts.length > 0) return [category, modelParts];
-
-            if (!fallbackGeometry) fallbackGeometry = new THREE.BoxGeometry(1, 1, 1);
-            return [category, [{
-                geometry: fallbackGeometry,
-                material: new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.75 }),
-                matrix: new THREE.Matrix4(),
-            }]];
-        }),
-    );
     group.add(createWeatherSpanMarkers(
         spans,
-        buildSizedKit(completeKit, width, layerHeight, depth),
+        buildSizedKit(weatherMeshKit, width, layerHeight, depth),
     ));
 }
 
@@ -316,31 +287,6 @@ function median(values) {
     const sorted = [...values].sort((left, right) => left - right);
     if (!sorted.length) return NaN;
     return sorted[Math.floor(sorted.length / 2)];
-}
-
-function renderEvents(events, group) {
-    const geometry = new THREE.SphereGeometry(2.2, 8, 8);
-    const eventsByType = new Map();
-    events.forEach(event => {
-        if (!hasPosition(event.centroid)) return;
-        if (!eventsByType.has(event.type)) eventsByType.set(event.type, []);
-        eventsByType.get(event.type).push(event.centroid);
-    });
-
-    eventsByType.forEach((centroids, type) => {
-        const material = new THREE.MeshBasicMaterial({
-            color: EVENT_COLORS[type] || EVENT_COLORS.default,
-        });
-        const markers = new THREE.InstancedMesh(geometry, material, centroids.length);
-        const transform = new THREE.Object3D();
-        centroids.forEach((centroid, index) => {
-            transform.position.set(centroid.x, centroid.y, centroid.z);
-            transform.updateMatrix();
-            markers.setMatrixAt(index, transform.matrix);
-        });
-        markers.instanceMatrix.needsUpdate = true;
-        group.add(markers);
-    });
 }
 
 function renderAirports(airports, group) {
