@@ -86,6 +86,8 @@ export function renderMeta(meta) {
 
     const source = meta.source === 'cache' ? 'CACHED' : String(meta.source || 'UNKNOWN').toUpperCase();
     const details = [source];
+    if (meta.scenario_title) details.push(meta.scenario_title);
+    if (meta.event_count != null) details.push(`${meta.event_count} weather events`);
     if (meta.fetched_at) details.push(`fetched ${meta.fetched_at}`);
     if (meta.vertical_exaggeration != null) details.push(`vertical scale x${meta.vertical_exaggeration}`);
     if (meta.trajectory_status) details.push(meta.trajectory_status);
@@ -135,16 +137,26 @@ function renderGrid(grid, group) {
 
 function renderEvents(events, group) {
     const geometry = new THREE.SphereGeometry(4, 8, 8);
-
+    const eventsByType = new Map();
     events.forEach(event => {
-        const centroid = event.centroid;
-        if (!hasPosition(centroid)) return;
+        if (!hasPosition(event.centroid)) return;
+        if (!eventsByType.has(event.type)) eventsByType.set(event.type, []);
+        eventsByType.get(event.type).push(event.centroid);
+    });
+
+    eventsByType.forEach((centroids, type) => {
         const material = new THREE.MeshBasicMaterial({
-            color: EVENT_COLORS[event.type] || EVENT_COLORS.default,
+            color: EVENT_COLORS[type] || EVENT_COLORS.default,
         });
-        const marker = new THREE.Mesh(geometry, material);
-        marker.position.set(centroid.x, centroid.y, centroid.z);
-        group.add(marker);
+        const markers = new THREE.InstancedMesh(geometry, material, centroids.length);
+        const transform = new THREE.Object3D();
+        centroids.forEach((centroid, index) => {
+            transform.position.set(centroid.x, centroid.y, centroid.z);
+            transform.updateMatrix();
+            markers.setMatrixAt(index, transform.matrix);
+        });
+        markers.instanceMatrix.needsUpdate = true;
+        group.add(markers);
     });
 }
 

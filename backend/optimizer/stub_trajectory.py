@@ -33,8 +33,7 @@ def _find_nearest_exposure(point_xz, grid_points, pressure_level):
     return level_data.get("exposure_score") if level_data else None
 
 
-def generate_stub_route(origin, destination, grid_points, pressure_level=BASELINE_PRESSURE_LEVEL,
-                         num_points=10, lateral_offset_km=0.0, altitude_offset_km=0.0):
+def generate_stub_route(origin, destination, grid_points, pressure_level=BASELINE_PRESSURE_LEVEL,num_points=10, lateral_offset_km=0.0, altitude_offset_km=0.0):
     """
     TEMPORARY. Produces a straight-line or gently bow-shaped path between
     two airports so the frontend has real-shaped trajectory data to build

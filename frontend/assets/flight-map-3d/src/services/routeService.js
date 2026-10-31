@@ -1,13 +1,13 @@
-import { mockRouteData } from '../data/mockRouteData.js';
+const API_BASE_URL = 'http://localhost:8000';
 
-export async function fetchRouteData() {
-  // TEMPORARY: returns local mock data.
-  // Later, replace this function's body with a real fetch, e.g.:
-  //
-  // const response = await fetch('https://your-backend.com/api/routes');
-  // return response.json();
-  //
-  // Nothing outside this file needs to change when that happens.
+export async function fetchSceneData(scenario) {
+  const response = await fetch(
+    `${API_BASE_URL}/test-scenarios/${encodeURIComponent(scenario)}`,
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail || `Scenario request failed (${response.status})`);
+  }
 
-  return Promise.resolve(mockRouteData);
+  return response.json();
 }

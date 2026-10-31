@@ -107,6 +107,53 @@ def test_scene_data_includes_backend_positioned_airports(monkeypatch):
     assert (map_bounds["max_x"], map_bounds["max_z"]) == main.latlon_to_scene_xz(
         main.ROMANIA_MAP_GEO_BOUNDS["max_lat"], main.ROMANIA_MAP_GEO_BOUNDS["max_lon"]
     )
+    assert response.json()["meta"]["trajectory_status"].startswith("A* optimized route")
+    assert len(response.json()["routes"]["baseline"]) == len(
+        response.json()["routes"]["optimized"]
+    )
+    assert "avoided_high_exposure_cells" in response.json()["routes"]["reasoning"]
+
+
+def test_optimize_endpoint_returns_routes_for_selected_mode(monkeypatch):
+    grid = main.attach_scene_coordinates(
+        [
+            {
+                "lat": 45.5,
+                "lon": 23.75,
+                "levels": {
+                    level: {
+                        "geopotential_height": 10400,
+                        "exposure_score": None,
+                    }
+                    for level in main.PRESSURE_LEVELS
+                },
+            }
+        ],
+        main.PRESSURE_LEVELS,
+    )
+    requested_test_modes = []
+
+    def fake_scene_grid(req):
+        requested_test_modes.append(req.test_mode)
+        return {}, grid
+
+    monkeypatch.setattr(main, "_scene_grid", fake_scene_grid)
+
+    response = client.post("/optimize", json={"mode": "Lower-exposure"})
+
+    assert response.status_code == 200
+    assert requested_test_modes == [False]
+    routes = response.json()
+    assert routes["reasoning"]["mode"] == "lower-exposure"
+    assert len(routes["baseline"]) == len(routes["optimized"])
+    assert routes["metrics"]["optimized"]["avg_exposure"] is None
+
+
+def test_optimize_endpoint_rejects_unknown_mode():
+    response = client.post("/optimize", json={"mode": "Storm chaser"})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "mode must be Fastest, Balanced, or Lower-exposure"
 
 
 def test_scene_endpoint_allows_local_frontend_cors():
