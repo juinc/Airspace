@@ -15,26 +15,29 @@ async function buildKit() {
 
   await Promise.all(
     Object.entries(weatherModelConfig).map(async ([category, config]) => {
-      const rawModel = await loadModel(config.path);
-      const container = normalizeToUnitCube(rawModel, config);
-      container.updateWorldMatrix(true, true);
+      try {
+        const rawModel = await loadModel(config.path);
+        const container = normalizeToUnitCube(rawModel, config);
+        container.updateWorldMatrix(true, true);
 
-      const parts = [];
-      container.traverse(child => {
-        if (!child.isMesh) return;
-
-        child.geometry.userData.shared = true;
-        const materials = Array.isArray(child.material) ? child.material : [child.material];
-        materials.forEach(m => { m.userData.shared = true; });
-
-        parts.push({
-          geometry: child.geometry,
-          material: child.material,
-          matrix: child.matrixWorld.clone(),
+        const parts = [];
+        container.traverse(child => {
+          if (!child.isMesh) return;
+          child.geometry.userData.shared = true;
+          const materials = Array.isArray(child.material) ? child.material : [child.material];
+          materials.forEach(m => { m.userData.shared = true; });
+          parts.push({
+            geometry: child.geometry,
+            material: child.material,
+            matrix: child.matrixWorld.clone(),
+          });
         });
-      });
 
-      kit[category] = parts;
+        kit[category] = parts;
+      } catch (error) {
+        console.error(`Weather model "${category}" failed to load from ${config.path}:`, error);
+        kit[category] = []; // leave this category empty instead of crashing everything
+      }
     })
   );
 
