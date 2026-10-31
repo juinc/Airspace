@@ -59,7 +59,8 @@ async function loadScenario() {
         if (currentRequestId !== requestId) return;
 
         if (!mapMesh) {
-            mapMesh = createMapMesh(mapModel, payload.grid, payload.meta?.map_bounds);
+            const mapBounds = payload.meta && payload.meta.map_bounds;
+            mapMesh = createMapMesh(mapModel, payload.grid, mapBounds);
             scene.add(mapMesh);
         }
 
@@ -72,12 +73,12 @@ async function loadScenario() {
         scene.add(activeDataGroup);
         alignAirportsToMap(activeDataGroup, mapMesh);
         renderAltitudeLegend(payload.grid || []);
-        renderMetrics(payload.routes?.metrics || {});
-        renderMeta({ ...payload.meta, event_count: payload.events?.length || 0 });
+        renderMetrics((payload.routes && payload.routes.metrics) || {});
+        renderMeta({ ...payload.meta, event_count: (payload.events && payload.events.length) || 0 });
 
-        const bounds = payload.meta?.map_bounds;
+        const bounds = payload.meta && payload.meta.map_bounds;
         if (bounds) {
-            const optimizedRoute = payload.routes?.optimized || [];
+            const optimizedRoute = (payload.routes && payload.routes.optimized) || [];
             const routeAltitude = optimizedRoute.length ?
                 optimizedRoute.reduce((total, waypoint) => total + waypoint.y, 0) / optimizedRoute.length :
                 0;
@@ -112,7 +113,9 @@ const clock = new THREE.Clock();
 function animate() {
     requestAnimationFrame(animate);
     const delta = clock.getDelta();
-    activeDataGroup?.userData.update?.(delta);
+    if (activeDataGroup && activeDataGroup.userData.update) {
+        activeDataGroup.userData.update(delta);
+    }
     controls.update();
     renderer.render(scene, camera);
 }
