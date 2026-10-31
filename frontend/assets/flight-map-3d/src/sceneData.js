@@ -31,7 +31,7 @@ export function createSceneDataGroup(payload, planeTemplate, initialProgress = 0
 
     const routes = payload.routes || {};
     renderRoute(routes.baseline, 0x3399ff, PathStyle.DASHED, group);
-    if (payload.weather_update ? .replanned) {
+    if (payload.weather_update && payload.replanned) {
         renderRoute(routes.previous_optimized, 0x9aa6b2, PathStyle.DASHED, group);
     }
     const optimizedCurve = renderRoute(routes.optimized, 0xff6633, PathStyle.SOLID, group);
