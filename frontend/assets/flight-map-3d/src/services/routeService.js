@@ -10,7 +10,7 @@ export async function fetchSceneData(scenario, routeProgress = 0.35) {
     );
     if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(body ? .detail || `Scenario request failed (${response.status})`);
+        throw new Error(body && body.detail || `Scenario request failed (${response.status})`);
     }
 
     return response.json();
@@ -32,7 +32,7 @@ export async function replanWeatherScene(previousPayload, routeProgress, weather
     });
     if (!response.ok) {
         const body = await response.json().catch(() => null);
-        throw new Error(body ? .detail || `Replan request failed (${response.status})`);
+        throw new Error(body && body.detail || `Replan request failed (${response.status})`);
     }
 
     return response.json();
