@@ -7,6 +7,8 @@ import { createControls } from './core/controls.js';
 import { loadModel } from './loaders/modelLoader.js';
 import { createPlaneTemplate } from './objects/plane.js';
 import { createMapMesh } from './objects/mapMesh.js';
+import { loadWeatherMeshKit } from './utils/weatherMeshKit.js';
+
 import {
     alignAirportsToMap,
     createSceneDataGroup,
@@ -16,6 +18,8 @@ import {
     renderMetrics,
 } from './sceneData.js';
 import { fetchSceneData } from './services/routeService.js';
+
+const weatherKitPromise = loadWeatherMeshKit();
 
 const container = document.getElementById('app');
 
@@ -51,10 +55,11 @@ async function loadScenario() {
     status.textContent = `Loading ${scenario}...`;
 
     try {
-        const [payload, mapModel, planeTemplate] = await Promise.all([
-            fetchSceneData(scenario),
-            mapPromise,
-            planeTemplatePromise,
+        const [payload, mapModel, planeTemplate, weatherMeshKit] = await Promise.all([
+          fetchSceneData(scenario),
+          mapPromise,
+          planeTemplatePromise,
+          weatherKitPromise,
         ]);
         if (currentRequestId !== requestId) return;
 
@@ -63,8 +68,8 @@ async function loadScenario() {
             mapMesh = createMapMesh(mapModel, payload.grid, mapBounds);
             scene.add(mapMesh);
         }
-
-        const nextGroup = createSceneDataGroup(payload, planeTemplate);
+        
+        const nextGroup = createSceneDataGroup(payload, planeTemplate, weatherMeshKit);
         if (activeDataGroup) {
             scene.remove(activeDataGroup);
             disposeSceneDataGroup(activeDataGroup);
