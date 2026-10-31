@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { FlightCurve, PathStyle } from './objects/flightCurve.js';
 import { createPlaneAnimator, instantiatePlane } from './objects/plane.js';
+import { buildWeatherColumns } from './utils/weatherLayers.js';
+import { pointsFromGrid } from './utils/weatherPointAdapters.js';
+import { createWeatherSpanMarkers } from './utils/weatherSpanMarkers.js';
 
 const EXPOSURE_COLORS = {
     low: 0x35A66B,
@@ -18,12 +21,13 @@ const EVENT_COLORS = {
 };
 const PRESSURE_LEVEL_COLORS = [0x43c1c6, 0x7abf78, 0xe2b65f, 0xe77c68];
 
-export function createSceneDataGroup(payload, planeTemplate, initialProgress = 0) {
+export function createSceneDataGroup(payload, planeTemplate, initialProgress = 0, weatherMeshKit = null) {
     const group = new THREE.Group();
-    renderGrid(payload.grid || [], group);
+    renderGrid(payload.grid || [], group, weatherMeshKit);
     renderAltitudeLayers(payload.grid || [], group);
     renderEvents(payload.events || [], group);
     renderAirports(payload.airports || [], group);
+
 
     const routes = payload.routes || {};
     renderRoute(routes.baseline, 0x3399ff, PathStyle.DASHED, group);
@@ -65,10 +69,14 @@ export function disposeSceneDataGroup(group) {
     const textures = new Set();
 
     group.traverse(object => {
-        if (object.geometry) geometries.add(object.geometry);
+        if (object.geometry && !object.geometry.userData.shared) {
+            geometries.add(object.geometry);
+        }
         if (Array.isArray(object.material)) {
-            object.material.forEach(material => collectMaterial(material, materials, textures));
-        } else if (object.material) {
+            object.material.forEach(material => {
+                if (!material.userData.shared) collectMaterial(material, materials, textures);
+            });
+        } else if (object.material && !object.material.userData.shared) {
             collectMaterial(object.material, materials, textures);
         }
     });
@@ -169,45 +177,49 @@ export function renderAltitudeLegend(grid) {
         });
 }
 
-function renderGrid(grid, group) {
+function renderGrid(grid, group, weatherMeshKit) {
+    const points = pointsFromGrid(grid);
+    if (points.length === 0) return;
+
+    const spans = buildWeatherColumns(points);
     const width = coordinateStep(grid, 'x');
     const depth = coordinateStep(grid, 'z');
     if (width === null || depth === null) return;
 
-    const geometry = new THREE.PlaneGeometry(width, depth);
-    geometry.rotateX(-Math.PI / 2);
-    const cellsByColor = new Map();
+    const layerHeight = coordinateStep(points, 'y') || Math.min(width, depth);
 
-    grid.forEach(point => {
-        if (!Number.isFinite(point.x) || !Number.isFinite(point.z)) return;
+    if (weatherMeshKit) {
+        group.add(createWeatherSpanMarkers(spans, buildSizedKit(weatherMeshKit, width, layerHeight, depth)));
+        return;
+    }
 
-        Object.values(point.levels || {}).forEach(level => {
-            if (!level || !Number.isFinite(level.y)) return;
-            const color = scoreToColor(level.exposure_score);
-            if (!cellsByColor.has(color)) cellsByColor.set(color, []);
-            cellsByColor.get(color).push([point.x, level.y, point.z]);
-        });
+    // Fallback: flat colored box tiles, used only if real meshes aren't loaded yet
+    const geometry = new THREE.BoxGeometry(1, 1, 1);
+    const boxKit = Object.fromEntries(
+        Object.entries(EXPOSURE_COLORS).map(([category, color]) => [
+            category, [{
+                geometry,
+                material: new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.75 }),
+                matrix: new THREE.Matrix4().makeScale(width, layerHeight, depth),
+            }],
+        ]),
+    );
+    group.add(createWeatherSpanMarkers(spans, boxKit));
+}
+
+function buildSizedKit(weatherMeshKit, width, layerHeight, depth) {
+    const cellScale = new THREE.Matrix4().makeScale(width, layerHeight, depth);
+    const sized = {};
+
+    Object.entries(weatherMeshKit).forEach(([category, parts]) => {
+        sized[category] = parts.map(part => ({
+            geometry: part.geometry,
+            material: part.material,
+            matrix: cellScale.clone().multiply(part.matrix),
+        }));
     });
 
-    cellsByColor.forEach((positions, color) => {
-        const material = new THREE.MeshBasicMaterial({
-            color,
-            transparent: true,
-            opacity: 0.45,
-            side: THREE.DoubleSide,
-        });
-        const cells = new THREE.InstancedMesh(geometry, material, positions.length);
-        const transform = new THREE.Object3D();
-
-        positions.forEach(([x, y, z], index) => {
-            transform.position.set(x, y, z);
-            transform.updateMatrix();
-            cells.setMatrixAt(index, transform.matrix);
-        });
-
-        cells.instanceMatrix.needsUpdate = true;
-        group.add(cells);
-    });
+    return sized;
 }
 
 function renderAltitudeLayers(grid, group) {
@@ -366,14 +378,6 @@ function coordinateStep(points, axis) {
     }
 
     return Number.isFinite(step) ? step : null;
-}
-
-function scoreToColor(score) {
-    if (!Number.isFinite(score)) return EXPOSURE_COLORS.unknown;
-    if (score <= 25) return EXPOSURE_COLORS.low;
-    if (score <= 50) return EXPOSURE_COLORS.moderate;
-    if (score <= 75) return EXPOSURE_COLORS.elevated;
-    return EXPOSURE_COLORS.high;
 }
 
 function hasPosition(point) {
