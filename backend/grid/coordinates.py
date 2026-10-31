@@ -7,7 +7,7 @@ GRID_ORIGIN_LON = 24.875
 
 EARTH_METERS_PER_DEGREE_LAT = 111_320  # constant everywhere on Earth
 SCENE_UNIT_METERS = 1000               # 1 scene unit = 1 km
-VERTICAL_EXAGGERATION = 4              # altitude-only multiplier for scene readability
+VERTICAL_EXAGGERATION = 6              # altitude-only multiplier for scene readability
 
 # Fallback standard-atmosphere altitudes (meters), used ONLY if a cell's
 # real geopotential_height is missing from the forecast response.
