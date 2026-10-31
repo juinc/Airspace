@@ -7,6 +7,7 @@ import { createControls } from './core/controls.js';
 import { loadModel } from './loaders/modelLoader.js';
 import { createPlaneTemplate } from './objects/plane.js';
 import { createMapMesh } from './objects/mapMesh.js';
+import { loadWeatherMeshKit } from './utils/weatherMeshKit.js';
 import {
     alignAirportsToMap,
     createSceneDataGroup,
@@ -43,12 +44,14 @@ scenarioSelector.value = scenarios.has(initialScenario) ? initialScenario : 'hea
 let activeDataGroup;
 let activePayload;
 let activePlaneTemplate;
+let activeWeatherMeshKit;
 let weatherUpdateTimer;
 let weatherUpdateNumber = 0;
 let mapMesh;
 let requestId = 0;
 const mapPromise = loadModel('/models/romania.glb');
 const planeTemplatePromise = createPlaneTemplate();
+const weatherKitPromise = loadWeatherMeshKit();
 
 async function loadScenario(routeProgress = 0.35) {
     const currentRequestId = ++requestId;
@@ -56,12 +59,13 @@ async function loadScenario(routeProgress = 0.35) {
     status.textContent = `Loading ${scenario}...`;
 
     try {
-        const [payload, mapModel, planeTemplate] = await Promise.all([
+        const [payload, mapModel, planeTemplate, weatherMeshKit] = await Promise.all([
             scenario === 'drastic-weather-change' && activePayload ?
             replanWeatherScene(activePayload, routeProgress) :
             fetchSceneData(scenario, routeProgress),
             mapPromise,
             planeTemplatePromise,
+            weatherKitPromise,
         ]);
         if (currentRequestId !== requestId) return;
 
@@ -72,6 +76,7 @@ async function loadScenario(routeProgress = 0.35) {
         }
 
         activePlaneTemplate = planeTemplate;
+        activeWeatherMeshKit = weatherMeshKit;
         applyScenePayload(payload);
 
         const bounds = payload.meta && payload.meta.map_bounds;
@@ -114,6 +119,7 @@ function applyScenePayload(payload, initialProgress = 0) {
         payload,
         activePlaneTemplate,
         initialProgress,
+        activeWeatherMeshKit,
     );
     if (activeDataGroup) {
         scene.remove(activeDataGroup);

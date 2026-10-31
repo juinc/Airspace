@@ -188,23 +188,25 @@ function renderGrid(grid, group, weatherMeshKit) {
 
     const layerHeight = coordinateStep(points, 'y') || Math.min(width, depth);
 
-    if (weatherMeshKit) {
-        group.add(createWeatherSpanMarkers(spans, buildSizedKit(weatherMeshKit, width, layerHeight, depth)));
-        return;
-    }
+    // Keep rendering a category when its model is missing or fails to load.
+    let fallbackGeometry;
+    const completeKit = Object.fromEntries(
+        Object.entries(EXPOSURE_COLORS).map(([category, color]) => {
+            const modelParts = weatherMeshKit && weatherMeshKit[category];
+            if (modelParts && modelParts.length > 0) return [category, modelParts];
 
-    // Fallback: flat colored box tiles, used only if real meshes aren't loaded yet
-    const geometry = new THREE.BoxGeometry(1, 1, 1);
-    const boxKit = Object.fromEntries(
-        Object.entries(EXPOSURE_COLORS).map(([category, color]) => [
-            category, [{
-                geometry,
+            if (!fallbackGeometry) fallbackGeometry = new THREE.BoxGeometry(1, 1, 1);
+            return [category, [{
+                geometry: fallbackGeometry,
                 material: new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.75 }),
-                matrix: new THREE.Matrix4().makeScale(width, layerHeight, depth),
-            }],
-        ]),
+                matrix: new THREE.Matrix4(),
+            }]];
+        }),
     );
-    group.add(createWeatherSpanMarkers(spans, boxKit));
+    group.add(createWeatherSpanMarkers(
+        spans,
+        buildSizedKit(completeKit, width, layerHeight, depth),
+    ));
 }
 
 function buildSizedKit(weatherMeshKit, width, layerHeight, depth) {
