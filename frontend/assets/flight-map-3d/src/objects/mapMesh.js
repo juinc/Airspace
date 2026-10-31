@@ -1,21 +1,21 @@
 import * as THREE from 'three';
 
-export function createLights(scene) {
-    const ambient = new THREE.AmbientLight(0xffffff, 0.6);
-    scene.add(ambient);
+export function getMapPlaneY() {
+    return 0;
+}
 
-    const directional = new THREE.DirectionalLight(0xffffff, 1);
-    directional.position.set(10, 20, 10);
-    directional.castShadow = true;
+export function createMapMesh(model, grid, mapBounds) {
+    const sceneBounds = getMapBounds(grid, mapBounds);
+    const modelBounds = new THREE.Box3().setFromObject(model);
+    const modelSize = modelBounds.getSize(new THREE.Vector3());
+    if (modelSize.x <= 0 || modelSize.y <= 0 || modelSize.z <= 0) {
+        throw new Error('Romania map model has no usable extent.');
+    }
 
-    // Shadow camera bounds — how large an area can cast/receive shadows
-    directional.shadow.camera.left = -20;
-    directional.shadow.camera.right = 20;
-    directional.shadow.camera.top = 20;
-    directional.shadow.camera.bottom = -20;
-
-    scene.add(directional);
-}   model.scale.y *= (scaleX + scaleZ) / 2;
+    const scaleX = (sceneBounds.max_x - sceneBounds.min_x) / modelSize.x;
+    const scaleZ = (sceneBounds.max_z - sceneBounds.min_z) / modelSize.z;
+    model.scale.x *= scaleX;
+    model.scale.y *= (scaleX + scaleZ);
     model.scale.z *= scaleZ;
     model.updateWorldMatrix(true, true);
 
@@ -24,8 +24,6 @@ export function createLights(scene) {
     model.position.x += (sceneBounds.min_x + sceneBounds.max_x) / 2 - center.x;
     model.position.z += (sceneBounds.min_z + sceneBounds.max_z) / 2 - center.z;
     model.position.y += getMapPlaneY() - fittedBounds.max.y;
-
-    model.scale.y *= 2;
 
     model.traverse(object => {
         if (object.isMesh) {
