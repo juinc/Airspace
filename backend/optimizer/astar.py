@@ -71,7 +71,12 @@ def _level_data(point, pressure_level):
 def _altitude_for_level(point, pressure_level, level_data):
     altitude_km = level_data.get("altitude_km")
     if altitude_km is not None:
-        return float(altitude_km)
+        try:
+            altitude_km = float(altitude_km)
+        except (TypeError, ValueError):
+            altitude_km = None
+        if altitude_km is not None and math.isfinite(altitude_km) and altitude_km > 0:
+            return altitude_km
     altitude_m = resolve_altitude_m(level_data, pressure_level)
     if altitude_m is None:
         return None
@@ -214,11 +219,155 @@ def _route_waypoint(node, lat=None, lon=None):
         "x": x,
         "y": node.y,
         "z": z,
+        "altitude_km": node.altitude_km,
+        "pressure_level": node.pressure_level,
         "exposure_score": node.exposure_score,
     }
 
 
-def find_path(grid_points, origin, destination, mode="Balanced"):
+def estimate_route_position(route, progress):
+    """Estimate the aircraft position at normalized distance along its route."""
+    if not route:
+        raise ValueError("route must contain at least one waypoint")
+    if not 0 <= progress <= 1:
+        raise ValueError("progress must be between 0 and 1")
+    if len(route) == 1:
+        return dict(route[0])
+
+    def altitude(waypoint):
+        value = waypoint.get("altitude_km")
+        return float(value) if value is not None else waypoint["y"] / VERTICAL_EXAGGERATION
+
+    lengths = []
+    total_length = 0.0
+    for start, end in zip(route, route[1:]):
+        length = math.sqrt(
+            (end["x"] - start["x"]) ** 2
+            + (end["z"] - start["z"]) ** 2
+            + (altitude(end) - altitude(start)) ** 2
+        )
+        lengths.append(length)
+        total_length += length
+    if total_length == 0:
+        return dict(route[0])
+
+    remaining = total_length * progress
+    for index, length in enumerate(lengths):
+        start, end = route[index], route[index + 1]
+        if remaining <= length or index == len(lengths) - 1:
+            fraction = remaining / length if length else 0.0
+            lat = start["lat"] + (end["lat"] - start["lat"]) * fraction
+            lon = start["lon"] + (end["lon"] - start["lon"]) * fraction
+            altitude_km = altitude(start) + (altitude(end) - altitude(start)) * fraction
+            x, z = latlon_to_scene_xz(lat, lon)
+            pressure_level = (
+                start.get("pressure_level")
+                if fraction < 0.5
+                else end.get("pressure_level", start.get("pressure_level"))
+            )
+            return {
+                "lat": lat,
+                "lon": lon,
+                "x": x,
+                "y": altitude_to_scene_y(altitude_km * 1000),
+                "z": z,
+                "altitude_km": altitude_km,
+                "pressure_level": pressure_level,
+                "exposure_score": start.get("exposure_score"),
+                "route_progress": progress,
+            }
+        remaining -= length
+
+    return dict(route[-1])
+
+
+def assess_route_weather_change(previous_grid, updated_grid, route, progress):
+    """Compare exposure on the remaining route and flag material increases."""
+    current_position = estimate_route_position(route, progress)
+    total_distance = sum(
+        _waypoint_distance(start, end)
+        for start, end in zip(route, route[1:])
+    )
+    remaining_distance = 0.0
+    samples = [current_position]
+    for start, end in zip(route, route[1:]):
+        segment_distance = _waypoint_distance(start, end)
+        remaining_distance += segment_distance
+        if total_distance and remaining_distance / total_distance > progress:
+            samples.append(end)
+
+    changes = []
+    for waypoint in samples:
+        pressure_level = waypoint.get("pressure_level")
+        previous_score = _nearest_exposure(previous_grid, waypoint, pressure_level)
+        updated_score = _nearest_exposure(updated_grid, waypoint, pressure_level)
+        if previous_score is None or updated_score is None:
+            continue
+        delta = updated_score - previous_score
+        changes.append(
+            {
+                "lat": waypoint["lat"],
+                "lon": waypoint["lon"],
+                "level_hpa": pressure_level,
+                "previous_exposure": previous_score,
+                "updated_exposure": updated_score,
+                "increase": round(delta, 1),
+            }
+        )
+
+    increases = [change["increase"] for change in changes]
+    affected = [change for change in changes if change["increase"] >= 25]
+    average_increase = sum(increases) / len(increases) if increases else 0.0
+    maximum_increase = max(increases, default=0.0)
+    drastic = maximum_increase >= 50 or (
+        len(affected) >= 2 and average_increase >= 25
+    )
+    return {
+        "drastic": drastic,
+        "threshold": {"single_waypoint_increase": 50, "average_increase": 25},
+        "sample_count": len(changes),
+        "affected_waypoint_count": len(affected),
+        "average_exposure_increase": round(average_increase, 1),
+        "maximum_exposure_increase": round(maximum_increase, 1),
+        "affected_waypoints": affected,
+    }
+
+
+def _waypoint_distance(start, end):
+    start_altitude = start.get("altitude_km")
+    if start_altitude is None:
+        start_altitude = start["y"] / VERTICAL_EXAGGERATION
+    end_altitude = end.get("altitude_km")
+    if end_altitude is None:
+        end_altitude = end["y"] / VERTICAL_EXAGGERATION
+    return math.sqrt(
+        (end["x"] - start["x"]) ** 2
+        + (end["z"] - start["z"]) ** 2
+        + (end_altitude - start_altitude) ** 2
+    )
+
+
+def _nearest_exposure(grid, waypoint, pressure_level):
+    if pressure_level is None or not grid:
+        return None
+    nearest = None
+    nearest_distance = float("inf")
+    for point in grid:
+        levels = point.get("levels", {})
+        level_data = levels.get(pressure_level, levels.get(str(pressure_level)))
+        if not level_data:
+            continue
+        x, z = point.get("x"), point.get("z")
+        if x is None or z is None:
+            x, z = latlon_to_scene_xz(point["lat"], point["lon"])
+        distance = (x - waypoint["x"]) ** 2 + (z - waypoint["z"]) ** 2
+        if distance < nearest_distance:
+            nearest_distance = distance
+            nearest = level_data.get("exposure_score")
+    return nearest
+
+
+def find_path(grid_points, origin, destination, mode="Balanced", start_position=None):
     """Find a weather-aware route through the 26-connected forecast grid."""
     canonical_mode = normalize_mode(mode)
     weather_weight = WEATHER_WEIGHTS[canonical_mode]
@@ -230,7 +379,11 @@ def find_path(grid_points, origin, destination, mode="Balanced"):
             default=float("inf"),
         ),
     )
-    start = _nearest_node(nodes, origin, preferred_level)
+    search_start = start_position or origin
+    start_layer = preferred_level
+    if start_position and start_position.get("pressure_level") in pressure_levels:
+        start_layer = pressure_levels.index(start_position["pressure_level"])
+    start = _nearest_node(nodes, search_start, start_layer)
     goal = _nearest_node(nodes, destination, preferred_level)
 
     tie_breaker = count()
@@ -287,7 +440,16 @@ def find_path(grid_points, origin, destination, mode="Balanced"):
         path_indices.append(predecessor)
     path_indices.reverse()
 
-    route = [_route_waypoint(start, origin["lat"], origin["lon"])]
+    start_waypoint = _route_waypoint(start, search_start["lat"], search_start["lon"])
+    if start_position:
+        start_waypoint.update(
+            {
+                "y": start_position.get("y", start_waypoint["y"]),
+                "altitude_km": start_position.get("altitude_km", start_waypoint["altitude_km"]),
+                "pressure_level": start_position.get("pressure_level", start.pressure_level),
+            }
+        )
+    route = [start_waypoint]
     route.extend(_route_waypoint(nodes[index]) for index in path_indices)
     route.append(_route_waypoint(goal, destination["lat"], destination["lon"]))
     return route
@@ -295,15 +457,21 @@ def find_path(grid_points, origin, destination, mode="Balanced"):
 
 def compute_route_metrics(waypoints):
     total_distance_km = 0.0
+    total_time_min = 0.0
     for start, end in zip(waypoints, waypoints[1:]):
-        vertical_distance_km = (
-            end["y"] - start["y"]
-        ) / VERTICAL_EXAGGERATION
-        total_distance_km += math.sqrt(
+        start_altitude = start.get("altitude_km")
+        if start_altitude is None:
+            start_altitude = start["y"] / VERTICAL_EXAGGERATION
+        end_altitude = end.get("altitude_km")
+        if end_altitude is None:
+            end_altitude = end["y"] / VERTICAL_EXAGGERATION
+        distance_km = math.sqrt(
             (end["x"] - start["x"]) ** 2
             + (end["z"] - start["z"]) ** 2
-            + vertical_distance_km**2
+            + (end_altitude - start_altitude) ** 2
         )
+        total_distance_km += distance_km
+        total_time_min += distance_km / CRUISE_SPEED_KMH * 60
 
     exposures = [
         waypoint["exposure_score"]
@@ -312,7 +480,7 @@ def compute_route_metrics(waypoints):
     ]
     return {
         "distance_km": round(total_distance_km, 1),
-        "time_min": round(total_distance_km / CRUISE_SPEED_KMH * 60, 1),
+        "time_min": round(total_time_min, 1),
         "avg_exposure": round(sum(exposures) / len(exposures), 1) if exposures else None,
     }
 

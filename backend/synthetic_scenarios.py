@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from grid.builder import build_horizontal_grid
 from grid.coordinates import attach_scene_coordinates
 from optimizer.astar import compute_route_metrics, find_avoided_high_exposure_cells, find_path, normalize_mode
-from optimizer.stub_trajectory import generate_stub_route
+from optimizer.stub_trajectory import generate_baseline_route
 from weather.client import PRESSURE_LEVELS
 from weather.events import detect_events
 from weather.normalize import weather_exposure_score
@@ -14,16 +14,22 @@ SCENARIO_SEEDS = {
     "heavy-storms": 91437,
     "clear-airspace": 187,
     "layered-random": 80631,
+    "drastic-weather-change": 55021,
 }
 SCENARIO_TITLES = {
     "random-storms": "Random storms, rain, thunderstorms, and severe storms",
     "heavy-storms": "High-density synthetic storm field",
     "clear-airspace": "Clear airspace",
     "layered-random": "Independent random weather by altitude layer",
+    "drastic-weather-change": "Drastic weather change and in-flight replan",
 }
 
 
-def build_synthetic_grid(scenario, config):
+def build_synthetic_grid(
+    scenario,
+    config,
+    weather_seed=0,
+):
     """Create reproducible forecast-like data without making weather API calls."""
     if scenario not in SCENARIO_SEEDS:
         raise ValueError(f"Unknown scenario: {scenario}")
@@ -36,10 +42,11 @@ def build_synthetic_grid(scenario, config):
         config["lat_step"],
         config["lon_step"],
     )
-    rng = random.Random(SCENARIO_SEEDS[scenario])
+    rng = random.Random(SCENARIO_SEEDS[scenario] + weather_seed)
     layer_weather_cells = {}
+    weather_cells = {}
     if scenario == "layered-random":
-        weather_fractions = (0.72, 0.5, 0.28, 0.08)
+        weather_fractions = (0.95, 0.08, 0.65, 0.03)
         for level, weather_fraction in zip(PRESSURE_LEVELS, weather_fractions):
             shuffled_indices = list(range(len(points)))
             rng.shuffle(shuffled_indices)
@@ -47,6 +54,23 @@ def build_synthetic_grid(scenario, config):
                 layer_weather_cells[(index, level)] = rng.choices(
                     ("rain", "thunderstorm", "severe_storm"),
                     weights=(0.2, 0.4, 0.4),
+                    k=1,
+                )[0]
+            weather_cell_count = round(len(points) * 0.3)
+    elif scenario == "drastic-weather-change":
+        weather_types = ("clear", "rain", "thunderstorm", "severe_storm")
+        weather_weights = (0.25, 0.25, 0.25, 0.25)
+        for index in range(len(points)):
+            weather_cells[index] = rng.choices(
+                weather_types,
+                weights=weather_weights,
+                k=1,
+            )[0]
+        for level in PRESSURE_LEVELS:
+            for index in range(len(points)):
+                layer_weather_cells[(index, level)] = rng.choices(
+                    weather_types,
+                    weights=weather_weights,
                     k=1,
                 )[0]
         weather_cell_count = 0
@@ -57,15 +81,15 @@ def build_synthetic_grid(scenario, config):
     else:
         weather_cell_count = 0
 
-    shuffled_indices = list(range(len(points)))
-    rng.shuffle(shuffled_indices)
-    weather_cells = {}
-    for index in shuffled_indices[:weather_cell_count]:
-        weather_cells[index] = rng.choices(
-            ("rain", "thunderstorm", "severe_storm"),
-            weights=(0.45, 0.30, 0.25),
-            k=1,
-        )[0]
+    if scenario != "drastic-weather-change":
+        shuffled_indices = list(range(len(points)))
+        rng.shuffle(shuffled_indices)
+        for index in shuffled_indices[:weather_cell_count]:
+            weather_cells[index] = rng.choices(
+                ("rain", "thunderstorm", "severe_storm"),
+                weights=(0.45, 0.30, 0.25),
+                k=1,
+            )[0]
 
     forecast_time = datetime.now(timezone.utc).isoformat()
     for index, point in enumerate(points):
@@ -85,20 +109,17 @@ def build_synthetic_grid(scenario, config):
             }
         )
         for level in PRESSURE_LEVELS:
-            layer_weather_type = layer_weather_cells.get((index, level), weather_type)
-            if scenario == "layered-random":
-                layer_cape, layer_precipitation, layer_vertical_velocity, layer_wind_speed = (
-                    _weather_values(layer_weather_type, rng)
-                )
-                layer_humidity = rng.uniform(35, 75) if layer_weather_type != "clear" else 0
-                layer_cloud_cover = rng.uniform(35, 100) if layer_weather_type != "clear" else 0
+            if scenario in {"layered-random", "drastic-weather-change"}:
+                layer_weather_type = layer_weather_cells.get((index, level), "clear")
             else:
-                layer_cape = cape
-                layer_precipitation = precipitation
-                layer_vertical_velocity = vertical_velocity
-                layer_wind_speed = wind_speed
-                layer_humidity = humidity
-                layer_cloud_cover = cloud_cover
+                layer_weather_type = weather_type
+
+            _, _, layer_vertical_velocity, layer_wind_speed = _weather_values(
+                layer_weather_type, rng
+            )
+            layer_humidity = (
+                rng.uniform(35, 75) if layer_weather_type != "clear" else 0
+            )
 
             point["levels"][level] = {
                 "temperature": None,
@@ -107,15 +128,12 @@ def build_synthetic_grid(scenario, config):
                 "vertical_velocity": round(layer_vertical_velocity, 2),
                 "geopotential_height": None,
                 "relative_humidity": round(layer_humidity, 1),
-                "cape": round(layer_cape, 1),
-                "precipitation": round(layer_precipitation, 2),
-                "cloud_cover": round(layer_cloud_cover, 1),
                 "exposure_score": weather_exposure_score(
-                    cape=layer_cape,
-                    precipitation=layer_precipitation,
+                    cape=cape,
+                    precipitation=precipitation,
                     vertical_velocity=layer_vertical_velocity,
                     humidity=layer_humidity,
-                    cloud_cover=layer_cloud_cover,
+                    cloud_cover=cloud_cover,
                 ),
             }
 
@@ -149,7 +167,7 @@ def build_synthetic_routes(grid, route, mode="Balanced"):
     optimized = find_path(
         grid, route["origin"], route["destination"], mode=canonical_mode
     )
-    baseline = generate_stub_route(
+    baseline = generate_baseline_route(
         route["origin"],
         route["destination"],
         grid,

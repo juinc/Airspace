@@ -21,8 +21,7 @@ const EVENT_COLORS = {
 };
 const PRESSURE_LEVEL_COLORS = [0x43c1c6, 0x7abf78, 0xe2b65f, 0xe77c68];
 
-export function createSceneDataGroup(payload, planeTemplate, weatherMeshKit)
-{
+export function createSceneDataGroup(payload, planeTemplate, initialProgress = 0, weatherMeshKit = null) {
     const group = new THREE.Group();
     renderGrid(payload.grid || [], group, weatherMeshKit);
     renderAltitudeLayers(payload.grid || [], group);
@@ -32,6 +31,9 @@ export function createSceneDataGroup(payload, planeTemplate, weatherMeshKit)
 
     const routes = payload.routes || {};
     renderRoute(routes.baseline, 0x3399ff, PathStyle.DASHED, group);
+    if (payload.weather_update && payload.replanned) {
+        renderRoute(routes.previous_optimized, 0x9aa6b2, PathStyle.DASHED, group);
+    }
     const optimizedCurve = renderRoute(routes.optimized, 0xff6633, PathStyle.SOLID, group);
     if (optimizedCurve) {
         const plane = instantiatePlane(planeTemplate);
@@ -49,7 +51,14 @@ export function createSceneDataGroup(payload, planeTemplate, weatherMeshKit)
             });
         });
         group.add(plane);
-        group.userData.update = createPlaneAnimator(plane, optimizedCurve.curve, 0.035);
+        const updatePlane = createPlaneAnimator(
+            plane,
+            optimizedCurve.curve,
+            0.035,
+            initialProgress,
+        );
+        group.userData.update = updatePlane;
+        group.userData.getFlightProgress = updatePlane.getProgress;
     }
     return group;
 }
@@ -188,8 +197,7 @@ function renderGrid(grid, group, weatherMeshKit) {
     const geometry = new THREE.BoxGeometry(1, 1, 1);
     const boxKit = Object.fromEntries(
         Object.entries(EXPOSURE_COLORS).map(([category, color]) => [
-            category,
-            [{
+            category, [{
                 geometry,
                 material: new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.75 }),
                 matrix: new THREE.Matrix4().makeScale(width, layerHeight, depth),

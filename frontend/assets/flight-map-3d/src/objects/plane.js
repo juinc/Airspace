@@ -26,10 +26,10 @@ export function instantiatePlane(template) {
     return plane;
 }
 
-export function createPlaneAnimator(planeMesh, curve, speed = 0.05) {
-    let t = 0;
+export function createPlaneAnimator(planeMesh, curve, speed = 0.05, initialProgress = 0) {
+    let t = initialProgress;
 
-    return function update(delta) {
+    function update(delta) {
         t += delta * speed;
         if (t > 1) t = 0; // loop back to start of route
 
@@ -38,5 +38,8 @@ export function createPlaneAnimator(planeMesh, curve, speed = 0.05) {
 
         planeMesh.position.copy(position);
         planeMesh.lookAt(lookAtPoint);
-    };
+    }
+
+    update.getProgress = () => t;
+    return update;
 }
