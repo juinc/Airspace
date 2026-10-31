@@ -1,21 +1,21 @@
 import * as THREE from 'three';
 
-const EXPOSURE_COLORS = {
-    low: 0x35A66B,
-    moderate: 0xC9BE37,
-    elevated: 0xE68A37,
-    high: 0xCE4C4C,
-    unknown: 0x888888,
-};
+export function createLights(scene) {
+    const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambient);
 
-const EVENT_COLORS = {
-    rain: 0x3399ff,
-    thunderstorm: 0xffaa00,
-    severe_storm: 0xff2200,
-    default: 0xffffff,
-};
+    const directional = new THREE.DirectionalLight(0xffffff, 1);
+    directional.position.set(10, 20, 10);
+    directional.castShadow = true;
 
-export function createSceneDataGroup(payload) {
+    // Shadow camera bounds — how large an area can cast/receive shadows
+    directional.shadow.camera.left = -20;
+    directional.shadow.camera.right = 20;
+    directional.shadow.camera.top = 20;
+    directional.shadow.camera.bottom = -20;
+
+    scene.add(directional);
+}xport function createSceneDataGroup(payload) {
     const group = new THREE.Group();
     renderGrid(payload.grid || [], group);
     renderEvents(payload.events || [], group);

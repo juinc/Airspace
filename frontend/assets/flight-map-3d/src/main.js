@@ -1,21 +1,21 @@
 import * as THREE from 'three';
-import { createScene } from './core/scene.js';
-import { createCamera } from './core/camera.js';
-import { createRenderer } from './core/renderer.js';
-import { createLights } from './core/lights.js';
-import { createControls } from './core/controls.js';
-import { createMapMesh, getMapPlaneY } from './objects/mapMesh.js';
-import { loadModel } from './loaders/modelLoader.js';
-import {
-    alignAirportsToMap,
-    createSceneDataGroup,
-    disposeSceneDataGroup,
-    renderMeta,
-    renderMetrics,
-} from './sceneData.js';
 
-const container = document.getElementById('app');
-const scene = createScene();
+export function createLights(scene) {
+    const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambient);
+
+    const directional = new THREE.DirectionalLight(0xffffff, 1);
+    directional.position.set(10, 20, 10);
+    directional.castShadow = true;
+
+    // Shadow camera bounds — how large an area can cast/receive shadows
+    directional.shadow.camera.left = -20;
+    directional.shadow.camera.right = 20;
+    directional.shadow.camera.top = 20;
+    directional.shadow.camera.bottom = -20;
+
+    scene.add(directional);
+}onst scene = createScene();
 const mapPlaneY = getMapPlaneY();
 const camera = createCamera(mapPlaneY);
 const renderer = createRenderer(container);

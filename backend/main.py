@@ -32,10 +32,10 @@ app.add_middleware(
 )
 
 DEFAULT_CONFIG = {
-    "min_lat": 43.75,
-    "max_lat": 47.50,
-    "min_lon": 22.75,
-    "max_lon": 27.00,
+    "min_lat": 43.50,
+    "max_lat": 48.50,
+    "min_lon": 20.00,
+    "max_lon": 30.00,
     "lat_step": 0.25,
     "lon_step": 0.25,
 }
@@ -208,7 +208,10 @@ def test_scene_data(req: GridRequest):
     """
     cfg = {**DEFAULT_CONFIG, **{k: v for k, v in req.dict().items() if v is not None and k != "test_mode"}}
 
-    cache_key = f"test-scene-{cfg['lat_step']}"
+    cache_key = (
+        f"test-scene-{cfg['min_lat']}-{cfg['max_lat']}-{cfg['min_lon']}-"
+        f"{cfg['max_lon']}-{cfg['lat_step']}-{cfg['lon_step']}"
+    )
     cached = load_cache(cache_key)
     if cached and not req.test_mode:
         cached.setdefault("airports", _scene_airports())

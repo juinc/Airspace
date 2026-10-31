@@ -27,25 +27,22 @@ def build_variable_list():
 
 def fetch_forecast(lat_list, lon_list, forecast_days=2):
     """
-    lat_list / lon_list are parallel lists. Open-Meteo accepts comma-separated
-    coordinates for batch requests.
-
-    TODO double check this against the live docs before the full grid run —
-    param names/behavior for multi-location requests can shift.
+    Send all parallel coordinates in one JSON-body request to avoid URL length
+    limits for full-grid forecasts.
     """
     if len(lat_list) != len(lon_list):
         raise ValueError("lat_list and lon_list must be the same length")
 
-    params = {
-        "latitude": ",".join(str(x) for x in lat_list),
-        "longitude": ",".join(str(x) for x in lon_list),
-        "hourly": ",".join(build_variable_list()),
-        "models": "ecmwf_aifs025_single",
+    payload = {
+        "latitude": lat_list,
+        "longitude": lon_list,
+        "hourly": build_variable_list(),
+        "models": ["ecmwf_aifs025_single"],
         "forecast_days": forecast_days,
         "timeformat": "iso8601",
     }
 
-    response = requests.get(OPEN_METEO_URL, params=params, timeout=30)
+    response = requests.post(OPEN_METEO_URL, json=payload, timeout=30)
     response.raise_for_status()
     return response.json()
 
