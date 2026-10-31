@@ -5,19 +5,26 @@ import { createRenderer } from './core/renderer.js';
 import { createLights } from './core/lights.js';
 import { createControls } from './core/controls.js';
 import { createGridSystem } from './objects/grid.js';
+import { createMapMesh, getMapPlaneY } from './objects/mapMesh.js';
 import { gridConfig } from './data/gridConfig.js';
 import { flightCurves } from './data/flightRoutes.js';
 import { createPlaneTemplate, instantiatePlane, createPlaneAnimator } from './objects/plane.js';
+import { loadModel } from './loaders/modelLoader.js';
 
 const container = document.getElementById('app');
 
 const scene = createScene();
-const camera = createCamera();
+const mapPlaneY = getMapPlaneY(gridConfig);
+const camera = createCamera(mapPlaneY);
 const renderer = createRenderer(container);
-const controls = createControls(camera, renderer.domElement);
+const controls = createControls(camera, renderer.domElement, mapPlaneY);
 
 createLights(scene);
 scene.add(createGridSystem(gridConfig));
+
+loadModel('/models/romania.glb')
+  .then(model => scene.add(createMapMesh(model, gridConfig)))
+  .catch(error => console.error('Failed to load Romania map:', error));
 
 // Draw all curves immediately — these don't depend on the model
 flightCurves.forEach(flightCurve => {

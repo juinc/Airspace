@@ -1,12 +1,29 @@
 import * as THREE from 'three';
 
-export function createMapMesh() {
-  const geometry = new THREE.BoxGeometry(14, 0.5, 8); // wide, thin, flat slab
-  const material = new THREE.MeshStandardMaterial({ color: 0x1a1a1a });
+export function getMapPlaneY(gridConfig) {
+  const { size, cubeSize, spacing } = gridConfig;
+  return -(size * (cubeSize + spacing) - spacing) / 2;
+}
 
-  const mesh = new THREE.Mesh(geometry, material);
-  mesh.receiveShadow = true;
-  mesh.position.y = 0;
+export function createMapMesh(model, gridConfig) {
+  const bounds = new THREE.Box3().setFromObject(model);
+  const targetWidth = gridConfig.size * (gridConfig.cubeSize + gridConfig.spacing)
+    - gridConfig.spacing;
+  model.scale.multiplyScalar(targetWidth / bounds.getSize(new THREE.Vector3()).x);
+  model.updateWorldMatrix(true, true);
 
-  return mesh;
+  const fittedBounds = new THREE.Box3().setFromObject(model);
+  const center = fittedBounds.getCenter(new THREE.Vector3());
+  model.position.x -= center.x;
+  model.position.z -= center.z;
+  model.position.y += getMapPlaneY(gridConfig) - fittedBounds.min.y;
+
+  model.traverse(object => {
+    if (object.isMesh) {
+      object.castShadow = true;
+      object.receiveShadow = true;
+    }
+  });
+
+  return model;
 }
