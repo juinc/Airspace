@@ -6,21 +6,129 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Flight Map 3D</title>
     <style>
-      html, body {
+      html,
+      body {
         margin: 0;
         padding: 0;
         overflow: hidden;
-        background: #6b7066;
+        background: #0d1117;
       }
+
       #app {
         width: 100vw;
         height: 100vh;
         display: block;
       }
+
+      #scene-overlay {
+        position: fixed;
+        inset: 14px 14px auto;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 12px;
+        color: #eef2f5;
+        font:
+          12px/1.4 system-ui,
+          sans-serif;
+        pointer-events: none;
+      }
+
+      #data-status,
+      .metrics {
+        border: 1px solid rgba(220, 232, 240, 0.22);
+        border-radius: 6px;
+        background: rgba(13, 17, 23, 0.86);
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+        backdrop-filter: blur(8px);
+      }
+
+      #data-status {
+        max-width: min(58vw, 680px);
+        padding: 9px 12px;
+        overflow-wrap: anywhere;
+      }
+
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(128px, 1fr));
+        gap: 14px;
+        padding: 10px 12px;
+      }
+
+      .metric-group {
+        display: grid;
+        gap: 4px;
+      }
+
+      .metric-title {
+        color: #a9bdca;
+        font-weight: 700;
+      }
+
+      .metric-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .metric-row span {
+        color: #a9bdca;
+      }
+
+      .metric-row strong {
+        text-align: right;
+      }
+
+      @media (max-width: 700px) {
+        #scene-overlay {
+          inset: 8px 8px auto;
+          flex-direction: column;
+        }
+        #data-status {
+          max-width: 100%;
+        }
+        .metrics {
+          width: 100%;
+          box-sizing: border-box;
+        }
+      }
     </style>
   </head>
+
   <body>
     <div id="app"></div>
+    <div id="scene-overlay">
+      <div id="data-status" role="status" aria-live="polite">
+        Waiting for forecast...
+      </div>
+      <section class="metrics" aria-label="Route metrics">
+        <div class="metric-group">
+          <strong class="metric-title">Baseline</strong>
+          <div class="metric-row">
+            <span>Distance</span><strong id="baseline-distance">N/A</strong>
+          </div>
+          <div class="metric-row">
+            <span>Time</span><strong id="baseline-time">N/A</strong>
+          </div>
+          <div class="metric-row">
+            <span>Exposure</span><strong id="baseline-exposure">N/A</strong>
+          </div>
+        </div>
+        <div class="metric-group">
+          <strong class="metric-title">Optimized</strong>
+          <div class="metric-row">
+            <span>Distance</span><strong id="optimized-distance">N/A</strong>
+          </div>
+          <div class="metric-row">
+            <span>Time</span><strong id="optimized-time">N/A</strong>
+          </div>
+          <div class="metric-row">
+            <span>Exposure</span><strong id="optimized-exposure">N/A</strong>
+          </div>
+        </div>
+      </section>
+    </div>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>
