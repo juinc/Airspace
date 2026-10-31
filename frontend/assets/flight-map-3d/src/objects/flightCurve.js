@@ -7,7 +7,7 @@ export const PathStyle = {
 
 let autoId = 0;
 
-export class flightCurve {
+export class FlightCurve {
   constructor({
     start,
     end,
@@ -31,6 +31,19 @@ export class flightCurve {
     this.label = label;
 
     this.curve = this._buildCurve();
+  }
+
+  static fromPath({ path, ...options }) {
+    if (!Array.isArray(path) || path.length < 2) {
+      throw new TypeError('A flight path must contain at least two coordinates.');
+    }
+
+    return new FlightCurve({
+      ...options,
+      start: path[0],
+      end: path[path.length - 1],
+      waypoints: path.slice(1, -1),
+    });
   }
 
   _buildCurve() {
@@ -68,3 +81,6 @@ export class flightCurve {
     return line;
   }
 }
+
+// Backwards-compatible alias for any existing lowercase imports.
+export { FlightCurve as flightCurve };

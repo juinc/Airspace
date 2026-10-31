@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { gridConfig } from '../data/gridConfig.js';
 import { getCubePosition } from '../utils/gridMath.js';
 
-export class gridCoordinate {
+export class GridCoordinate {
   constructor(x, y, z) {
     this.x = x;
     this.y = y;
@@ -26,7 +26,10 @@ export class gridCoordinate {
   toString() {
     return `(${this.x}, ${this.y}, ${this.z})`;
   }
-    static fromPlain(obj) {
-    return new gridCoordinate(obj.x, obj.y, obj.z);
+  static fromPlain(obj) {
+    return new GridCoordinate(obj.x, obj.y, obj.z);
   }
 }
+
+// Keep the original lowercase name available to existing utility modules.
+export { GridCoordinate as gridCoordinate };
