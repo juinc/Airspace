@@ -7,8 +7,6 @@ import { createControls } from './core/controls.js';
 import { loadModel } from './loaders/modelLoader.js';
 import { createPlaneTemplate } from './objects/plane.js';
 import { createMapMesh } from './objects/mapMesh.js';
-import { loadWeatherMeshKit } from './utils/weatherMeshKit.js';
-
 import {
     alignAirportsToMap,
     createSceneDataGroup,
@@ -17,9 +15,7 @@ import {
     renderMeta,
     renderMetrics,
 } from './sceneData.js';
-import { fetchSceneData } from './services/routeService.js';
-
-const weatherKitPromise = loadWeatherMeshKit();
+import { fetchSceneData, replanWeatherScene } from './services/routeService.js';
 
 const container = document.getElementById('app');
 
@@ -40,26 +36,32 @@ const scenarios = new Set([
     'clear-airspace',
     'layered-random',
     'real-meteo',
+    'drastic-weather-change',
 ]);
 scenarioSelector.value = scenarios.has(initialScenario) ? initialScenario : 'heavy-storms';
 
 let activeDataGroup;
+let activePayload;
+let activePlaneTemplate;
+let weatherUpdateTimer;
+let weatherUpdateNumber = 0;
 let mapMesh;
 let requestId = 0;
 const mapPromise = loadModel('/models/romania.glb');
 const planeTemplatePromise = createPlaneTemplate();
 
-async function loadScenario() {
+async function loadScenario(routeProgress = 0.35) {
     const currentRequestId = ++requestId;
     const scenario = scenarioSelector.value;
     status.textContent = `Loading ${scenario}...`;
 
     try {
-        const [payload, mapModel, planeTemplate, weatherMeshKit] = await Promise.all([
-          fetchSceneData(scenario),
-          mapPromise,
-          planeTemplatePromise,
-          weatherKitPromise,
+        const [payload, mapModel, planeTemplate] = await Promise.all([
+            scenario === 'drastic-weather-change' && activePayload ?
+            replanWeatherScene(activePayload, routeProgress) :
+            fetchSceneData(scenario, routeProgress),
+            mapPromise,
+            planeTemplatePromise,
         ]);
         if (currentRequestId !== requestId) return;
 
@@ -68,18 +70,9 @@ async function loadScenario() {
             mapMesh = createMapMesh(mapModel, payload.grid, mapBounds);
             scene.add(mapMesh);
         }
-        
-        const nextGroup = createSceneDataGroup(payload, planeTemplate, weatherMeshKit);
-        if (activeDataGroup) {
-            scene.remove(activeDataGroup);
-            disposeSceneDataGroup(activeDataGroup);
-        }
-        activeDataGroup = nextGroup;
-        scene.add(activeDataGroup);
-        alignAirportsToMap(activeDataGroup, mapMesh);
-        renderAltitudeLegend(payload.grid || []);
-        renderMetrics((payload.routes && payload.routes.metrics) || {});
-        renderMeta({ ...payload.meta, event_count: (payload.events && payload.events.length) || 0 });
+
+        activePlaneTemplate = planeTemplate;
+        applyScenePayload(payload);
 
         const bounds = payload.meta && payload.meta.map_bounds;
         if (bounds) {
@@ -96,6 +89,7 @@ async function loadScenario() {
             camera.lookAt(controls.target);
             controls.update();
         }
+        scheduleWeatherUpdate();
     } catch (error) {
         console.error(`Failed to load ${scenario} scenario:`, error);
         if (currentRequestId === requestId) {
@@ -105,11 +99,82 @@ async function loadScenario() {
 }
 
 scenarioSelector.addEventListener('change', () => {
+    window.clearTimeout(weatherUpdateTimer);
+    const routeProgress = activeDataGroup && activeDataGroup.userData.getFlightProgress ?
+        activeDataGroup.userData.getFlightProgress() :
+        0.35;
     const nextQuery = new URLSearchParams(window.location.search);
     nextQuery.set('scenario', scenarioSelector.value);
     window.history.replaceState(null, '', `${window.location.pathname}?${nextQuery}`);
-    loadScenario();
+    loadScenario(routeProgress);
 });
+
+function applyScenePayload(payload, initialProgress = 0) {
+    const nextGroup = createSceneDataGroup(
+        payload,
+        activePlaneTemplate,
+        initialProgress,
+    );
+    if (activeDataGroup) {
+        scene.remove(activeDataGroup);
+        disposeSceneDataGroup(activeDataGroup);
+    }
+    activeDataGroup = nextGroup;
+    activePayload = payload;
+    scene.add(activeDataGroup);
+    alignAirportsToMap(activeDataGroup, mapMesh);
+    renderAltitudeLegend(payload.grid || []);
+    renderMetrics((payload.routes && payload.routes.metrics) || {});
+    renderMeta({
+        ...payload.meta,
+        event_count: (payload.events && payload.events.length) || 0,
+    });
+}
+
+function scheduleWeatherUpdate() {
+    window.clearTimeout(weatherUpdateTimer);
+    if (scenarioSelector.value !== 'drastic-weather-change' || !activePayload) return;
+
+    const delay = 7000 + Math.random() * 8000;
+    weatherUpdateTimer = window.setTimeout(runWeatherUpdate, delay);
+}
+
+async function runWeatherUpdate() {
+    const previousPayload = activePayload;
+    if (!previousPayload || scenarioSelector.value !== 'drastic-weather-change') return;
+
+    const progress = activeDataGroup && activeDataGroup.userData.getFlightProgress ?
+        activeDataGroup.userData.getFlightProgress() :
+        0;
+    const weatherSeed = Math.floor(Math.random() * 2147483647);
+    const updateNumber = ++weatherUpdateNumber;
+    status.textContent = `Checking weather change ${updateNumber}...`;
+
+    try {
+        const nextPayload = await replanWeatherScene(
+            previousPayload,
+            progress,
+            weatherSeed,
+        );
+        if (
+            activePayload !== previousPayload ||
+            scenarioSelector.value !== 'drastic-weather-change'
+        ) return;
+
+        nextPayload.meta.trajectory_status = nextPayload.weather_update.replanned ?
+            `Weather update ${updateNumber}: ${nextPayload.meta.trajectory_status}` :
+            `Weather update ${updateNumber}: route unchanged below drastic threshold`;
+        applyScenePayload(
+            nextPayload,
+            nextPayload.weather_update.replanned ? 0 : progress,
+        );
+    } catch (error) {
+        console.error('Weather update failed:', error);
+        status.textContent = `Weather update failed: ${error.message}`;
+    } finally {
+        scheduleWeatherUpdate();
+    }
+}
 
 loadScenario();
 
@@ -121,6 +186,17 @@ function animate() {
     if (activeDataGroup && activeDataGroup.userData.update) {
         activeDataGroup.userData.update(delta);
     }
+    controls.update();
+    renderer.render(scene, camera);
+}
+
+animate();
+
+window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}); }
     controls.update();
     renderer.render(scene, camera);
 }

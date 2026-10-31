@@ -12,8 +12,10 @@ from optimizer.astar import (
     WEATHER_WEIGHTS,
     _build_nodes,
     _neighbors,
+    assess_route_weather_change,
     calculate_edge_cost,
     compute_route_metrics,
+    estimate_route_position,
     find_path,
     normalize_mode,
 )
@@ -129,6 +131,74 @@ def test_path_supports_missing_exposure_and_preference_mode_weights():
     }
     with pytest.raises(ValueError, match="mode must be"):
         find_path(grid, {"lat": 44, "lon": 23}, {"lat": 44.1, "lon": 23.1}, "unknown")
+
+
+def test_route_position_estimate_tracks_physical_distance_progress():
+    grid = _grid(rows=2, columns=3, levels=(300, 250))
+    route = find_path(grid, {"lat": 44.0, "lon": 23.0}, {"lat": 44.1, "lon": 23.2})
+
+    start = estimate_route_position(route, 0)
+    middle = estimate_route_position(route, 0.5)
+    end = estimate_route_position(route, 1)
+
+    assert (start["lat"], start["lon"]) == (route[0]["lat"], route[0]["lon"])
+    assert (end["lat"], end["lon"]) == (route[-1]["lat"], route[-1]["lon"])
+    assert 0 < middle["lat"] < 44.1
+    assert middle["route_progress"] == 0.5
+
+
+def test_astar_replans_from_supplied_airborne_position_and_pressure_layer():
+    grid = _grid(rows=3, columns=5, levels=(400, 300, 250))
+    start_position = {
+        "lat": 44.1,
+        "lon": 23.1,
+        "pressure_level": 300,
+        "altitude_km": FALLBACK_ALTITUDE_M[300] / 1000,
+        "y": altitude_to_scene_y(FALLBACK_ALTITUDE_M[300]),
+    }
+
+    route = find_path(
+        grid,
+        {"lat": 44.0, "lon": 23.0},
+        {"lat": 44.2, "lon": 23.4},
+        start_position=start_position,
+    )
+
+    assert route[0]["lat"] == start_position["lat"]
+    assert route[0]["lon"] == start_position["lon"]
+    assert route[0]["pressure_level"] == 300
+    assert route[-1]["lat"] == 44.2
+
+
+def test_weather_change_assessment_flags_large_remaining_route_exposure_jump():
+    previous_grid = _grid(rows=3, columns=5, levels=(250,))
+    updated_grid = _grid(
+        rows=3,
+        columns=5,
+        levels=(250,),
+        high_exposure_cells={(1, 2), (1, 3), (1, 4)},
+    )
+    route = find_path(
+        previous_grid,
+        {"lat": 44.1, "lon": 23.0},
+        {"lat": 44.1, "lon": 23.4},
+    )
+
+    assessment = assess_route_weather_change(previous_grid, updated_grid, route, 0.4)
+
+    assert assessment["drastic"] is True
+    assert assessment["maximum_exposure_increase"] >= 50
+    assert assessment["affected_waypoint_count"] > 0
+
+
+def test_weather_change_assessment_leaves_route_unchanged_for_small_change():
+    grid = _grid(rows=3, columns=5, levels=(250,))
+    route = find_path(grid, {"lat": 44.1, "lon": 23.0}, {"lat": 44.1, "lon": 23.4})
+
+    assessment = assess_route_weather_change(grid, grid, route, 0.4)
+
+    assert assessment["drastic"] is False
+    assert assessment["maximum_exposure_increase"] == 0
 
 
 def test_route_metrics_measure_physical_vertical_distance_and_skip_null_exposure():

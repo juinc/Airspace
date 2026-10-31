@@ -50,6 +50,10 @@ def test_resolve_altitude_falls_back_when_missing():
     assert resolve_altitude_m(level_data, 300) == 9200
 
 
+def test_resolve_altitude_falls_back_when_geopotential_is_non_finite():
+    assert resolve_altitude_m({"geopotential_height": float("nan")}, 300) == 9200
+
+
 def test_attach_scene_coordinates_adds_expected_fields():
     grid_points = [
         {

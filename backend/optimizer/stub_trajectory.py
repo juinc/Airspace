@@ -1,80 +1,79 @@
-import math
+from grid.coordinates import (
+    FALLBACK_ALTITUDE_M,
+    altitude_to_scene_y,
+    latlon_to_scene_xz,
+)
 
-from grid.coordinates import latlon_to_scene_xz, altitude_to_scene_y, FALLBACK_ALTITUDE_M
-
-CRUISE_SPEED_KMH = 800
-BASELINE_PRESSURE_LEVEL = 250  # 10.4 km, matches documented default cruise altitude
-
-
-def _interpolate(start, end, fraction):
-    return start + (end - start) * fraction
+BASELINE_PRESSURE_LEVEL = 250
 
 
-def _scene_distance_km(a, b):
-    return math.sqrt((a["x"] - b["x"]) ** 2 + (a["z"] - b["z"]) ** 2)
+def _nearest_baseline_level(lat, lon, grid_points, pressure_level):
+    x, z = latlon_to_scene_xz(lat, lon)
+    nearest = None
+    nearest_distance = float("inf")
+
+    for point in grid_points:
+        level_data = point.get("levels", {}).get(
+            pressure_level, point.get("levels", {}).get(str(pressure_level))
+        )
+        if not level_data:
+            continue
+        point_x, point_z = point.get("x"), point.get("z")
+        if point_x is None or point_z is None:
+            point_x, point_z = latlon_to_scene_xz(point["lat"], point["lon"])
+        distance = (point_x - x) ** 2 + (point_z - z) ** 2
+        if distance < nearest_distance:
+            nearest = level_data
+            nearest_distance = distance
+
+    if nearest is None:
+        altitude_m = FALLBACK_ALTITUDE_M[pressure_level]
+        return altitude_m / 1000, None
+
+    altitude_km = nearest.get("altitude_km")
+    if altitude_km is None:
+        altitude_m = nearest.get("geopotential_height")
+        if altitude_m is None:
+            altitude_m = FALLBACK_ALTITUDE_M[pressure_level]
+        altitude_km = altitude_m / 1000
+    return float(altitude_km), nearest.get("exposure_score")
 
 
-def _find_nearest_exposure(point_xz, grid_points, pressure_level):
-    """
-    Nearest-neighbor lookup against the already-fetched grid, used only to
-    attach an approximate exposure score to stub waypoints that don't sit
-    exactly on a grid node. Fine for ~300 points; not meant to scale further.
-    """
-    best, best_dist = None, None
-    for gp in grid_points:
-        dist = math.sqrt((gp["x"] - point_xz["x"]) ** 2 + (gp["z"] - point_xz["z"]) ** 2)
-        if best_dist is None or dist < best_dist:
-            best_dist, best = dist, gp
-
-    if best is None:
-        return None
-
-    level_data = best["levels"].get(pressure_level)
-    return level_data.get("exposure_score") if level_data else None
-
-
-def generate_stub_route(origin, destination, grid_points, pressure_level=BASELINE_PRESSURE_LEVEL,num_points=10, lateral_offset_km=0.0, altitude_offset_km=0.0):
-    """
-    TEMPORARY. Produces a straight-line or gently bow-shaped path between
-    two airports so the frontend has real-shaped trajectory data to build
-    against before real A* exists.
-
-    This is NOT weather-aware pathfinding — it exists purely to validate
-    the data contract end to end. Replace with optimizer/astar.py output
-    once built; response shape will not change.
-    """
-    altitude_m = FALLBACK_ALTITUDE_M.get(pressure_level, 10400) + (altitude_offset_km * 1000)
+def generate_baseline_route(
+    origin,
+    destination,
+    grid_points,
+    num_points,
+    pressure_level=BASELINE_PRESSURE_LEVEL,
+):
+    """Interpolate a straight airport-to-airport baseline at 250 hPa."""
+    if pressure_level not in FALLBACK_ALTITUDE_M:
+        raise ValueError(f"Unsupported baseline pressure level: {pressure_level}")
+    if num_points < 1:
+        raise ValueError("num_points must be at least one")
 
     waypoints = []
-    for i in range(num_points + 1):
-        fraction = i / num_points
-        lat = _interpolate(origin["lat"], destination["lat"], fraction)
-        lon = _interpolate(origin["lon"], destination["lon"], fraction)
-
-        # fake sideways bow so "optimized" is visually distinct from
-        # "baseline" — not weather-derived, purely cosmetic for now
-        lon += lateral_offset_km / 80 * math.sin(fraction * math.pi)
-
+    for index in range(num_points + 1):
+        fraction = index / num_points
+        lat = origin["lat"] + (destination["lat"] - origin["lat"]) * fraction
+        lon = origin["lon"] + (destination["lon"] - origin["lon"]) * fraction
         x, z = latlon_to_scene_xz(lat, lon)
-        y = altitude_to_scene_y(altitude_m)
-
-        point = {"lat": round(lat, 5), "lon": round(lon, 5), "x": x, "y": y, "z": z}
-        point["exposure_score"] = _find_nearest_exposure(point, grid_points, pressure_level)
-        waypoints.append(point)
-
+        altitude_km, exposure = _nearest_baseline_level(
+            lat, lon, grid_points, pressure_level
+        )
+        waypoints.append(
+            {
+                "lat": round(lat, 5),
+                "lon": round(lon, 5),
+                "x": x,
+                "y": altitude_to_scene_y(altitude_km * 1000),
+                "z": z,
+                "altitude_km": altitude_km,
+                "pressure_level": pressure_level,
+                "exposure_score": exposure,
+            }
+        )
     return waypoints
 
 
-def compute_route_metrics(waypoints):
-    total_distance_km = sum(
-        _scene_distance_km(waypoints[i], waypoints[i + 1]) for i in range(len(waypoints) - 1)
-    )
-    exposures = [wp["exposure_score"] for wp in waypoints if wp.get("exposure_score") is not None]
-    avg_exposure = round(sum(exposures) / len(exposures), 1) if exposures else None
-    time_min = round((total_distance_km / CRUISE_SPEED_KMH) * 60, 1)
-
-    return {
-        "distance_km": round(total_distance_km, 1),
-        "time_min": time_min,
-        "avg_exposure": avg_exposure,
-    }
+generate_stub_route = generate_baseline_route

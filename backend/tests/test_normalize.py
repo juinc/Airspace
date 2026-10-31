@@ -14,6 +14,11 @@ def test_normalize_mid_value():
     assert normalize(5, 0, 10) == 0.5
 
 
+def test_normalize_treats_non_finite_weather_as_missing():
+    assert normalize(float("nan"), 0, 10) is None
+    assert normalize(float("inf"), 0, 10) is None
+
+
 def test_exposure_score_all_values_at_max_is_100():
     score = weather_exposure_score(
         cape=3000, precipitation=20, vertical_velocity=3, humidity=100, cloud_cover=100
@@ -53,3 +58,11 @@ def test_exposure_score_renormalizes_when_component_missing():
 def test_exposure_score_single_available_component_is_fully_weighted():
     score = weather_exposure_score(precipitation=20)
     assert score == 100.0
+
+
+def test_exposure_score_renormalizes_around_non_finite_components():
+    score = weather_exposure_score(
+        cape=float("nan"), precipitation=20, vertical_velocity=0
+    )
+    expected = round((0.25 / (0.25 + 0.20)) * 100, 1)
+    assert score == expected
