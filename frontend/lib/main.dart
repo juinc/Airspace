@@ -1,23 +1,3 @@
-/*
-import 'package:flutter/material.dart';
-import 'package:frontend/pages/main_page.dart';
-
-void main() {
-  runApp(const Airspace());
-}
-
-class Airspace extends StatelessWidget {
-  const Airspace({super.key});
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Airspace',
-      home: const MainPage(),
-    );
-  }
-}
-*/
-
 import 'package:flutter/material.dart';
 import 'package:webview_windows/webview_windows.dart';
 import 'three_view.dart';
