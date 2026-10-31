@@ -25,6 +25,8 @@ export function createLights(scene) {
     model.position.z += (sceneBounds.min_z + sceneBounds.max_z) / 2 - center.z;
     model.position.y += getMapPlaneY() - fittedBounds.max.y;
 
+    model.scale.y *= 2;
+
     model.traverse(object => {
         if (object.isMesh) {
             object.castShadow = true;
