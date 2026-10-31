@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 
 export function createMiniCubeGeometry(cubeSize) {
-  return new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize);
+  return new THREE.BoxGeometry(7, 5, cubeSize);
 }
 
 export function createMiniCubeMaterial() {

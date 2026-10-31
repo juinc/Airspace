@@ -6,8 +6,8 @@ import { createLights } from './core/lights.js';
 import { createControls } from './core/controls.js';
 import { createGridSystem } from './objects/grid.js';
 import { gridConfig } from './data/gridConfig.js';
-import { createPlane, createPlaneAnimator } from './objects/plane.js';
 import { flightCurves } from './data/flightRoutes.js';
+import { createPlaneTemplate, instantiatePlane, createPlaneAnimator } from './objects/plane.js';
 
 const container = document.getElementById('app');
 
@@ -17,22 +17,31 @@ const renderer = createRenderer(container);
 const controls = createControls(camera, renderer.domElement);
 
 createLights(scene);
-
-// Grid system replaces the old flat slab placeholder
 scene.add(createGridSystem(gridConfig));
 
-// Flight paths/planes stay as before — they now fly inside the grid
-const planeAnimators = [];
-
+// Draw all curves immediately — these don't depend on the model
 flightCurves.forEach(flightCurve => {
   scene.add(flightCurve.createMesh());
-
-  if (flightCurve.taken) {
-    const planeMesh = createPlane();
-    scene.add(planeMesh);
-    planeAnimators.push(createPlaneAnimator(planeMesh, flightCurve.curve, 0.08));
-  }
 });
+
+const planeAnimators = [];
+
+// Load the model WITHOUT blocking the render loop
+createPlaneTemplate()
+  .then(planeTemplate => {
+    console.log('Plane model loaded successfully:', planeTemplate);
+
+    flightCurves
+      .filter(fc => fc.taken)
+      .forEach(flightCurve => {
+        const planeMesh = instantiatePlane(planeTemplate);
+        scene.add(planeMesh);
+        planeAnimators.push(createPlaneAnimator(planeMesh, flightCurve.curve, 0.08));
+      });
+  })
+  .catch(error => {
+    console.error('Failed to load plane model:', error);
+  });
 
 const clock = new THREE.Clock();
 
@@ -44,7 +53,7 @@ function animate() {
   renderer.render(scene, camera);
 }
 
-animate();
+animate(); // starts immediately, independent of model loading
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
