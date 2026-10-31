@@ -48,3 +48,60 @@ def test_weather_grid_test_mode_limits_to_four_points(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["point_count"] == 4
+
+
+def test_scene_data_includes_backend_positioned_airports(monkeypatch):
+    monkeypatch.setattr(main, "load_cache", lambda key: None)
+    monkeypatch.setattr(main, "save_cache", lambda key, payload: None)
+    monkeypatch.setattr(main, "fetch_forecast", lambda lat, lon: {})
+    monkeypatch.setattr(
+        main,
+        "parse_response",
+        lambda raw, latitudes, longitudes, levels: [
+            {
+                "lat": lat,
+                "lon": lon,
+                "forecast_time": "2026-10-31T00:00",
+                "levels": {
+                    level: {"geopotential_height": 10400, "exposure_score": 20}
+                    for level in levels
+                },
+            }
+            for lat, lon in zip(latitudes, longitudes)
+        ],
+    )
+    monkeypatch.setattr(main, "detect_events", lambda *args: [])
+
+    response = client.post("/test-scene-data", json={"test_mode": True})
+
+    assert response.status_code == 200
+    airports = response.json()["airports"]
+    assert [airport["name"] for airport in airports] == [
+        "LCCR Craiova",
+        "LRCL Cluj-Napoca",
+    ]
+    assert (airports[0]["x"], airports[0]["z"]) == main.latlon_to_scene_xz(
+        main.ROUTE["origin"]["lat"], main.ROUTE["origin"]["lon"]
+    )
+    assert airports[0]["y"] == 0.0
+    map_bounds = response.json()["meta"]["map_bounds"]
+    assert (map_bounds["min_x"], map_bounds["min_z"]) == main.latlon_to_scene_xz(
+        main.ROMANIA_MAP_GEO_BOUNDS["min_lat"], main.ROMANIA_MAP_GEO_BOUNDS["min_lon"]
+    )
+    assert (map_bounds["max_x"], map_bounds["max_z"]) == main.latlon_to_scene_xz(
+        main.ROMANIA_MAP_GEO_BOUNDS["max_lat"], main.ROMANIA_MAP_GEO_BOUNDS["max_lon"]
+    )
+
+
+def test_scene_endpoint_allows_local_frontend_cors():
+    response = client.options(
+        "/test-scene-data",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"

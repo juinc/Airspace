@@ -3,16 +3,33 @@ from typing import Optional
 
 import numpy as np
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from weather.client import fetch_forecast, parse_response, PRESSURE_LEVELS
 from weather.cache import load_cache, save_cache
 from weather.events import detect_events
 from grid.builder import build_horizontal_grid
-from grid.coordinates import attach_scene_coordinates, GRID_ORIGIN_LAT, GRID_ORIGIN_LON, VERTICAL_EXAGGERATION
+from grid.coordinates import (
+    attach_scene_coordinates,
+    latlon_to_scene_xz,
+    GRID_ORIGIN_LAT,
+    GRID_ORIGIN_LON,
+    VERTICAL_EXAGGERATION,
+)
 from optimizer.stub_trajectory import generate_stub_route, compute_route_metrics
 
 app = FastAPI(title="Airspace Weather Backend")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://10.0.2.2:5173",
+    ],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
+)
 
 DEFAULT_CONFIG = {
     "min_lat": 43.75,
@@ -23,10 +40,42 @@ DEFAULT_CONFIG = {
     "lon_step": 0.25,
 }
 
+ROMANIA_MAP_GEO_BOUNDS = {
+    "min_lat": 43.6186,
+    "max_lat": 48.2656,
+    "min_lon": 20.2617,
+    "max_lon": 29.6917,
+}
+
 ROUTE = {
     "origin": {"name": "LCCR", "city": "Craiova", "lat": 44.3180, "lon": 23.8886},
     "destination": {"name": "LRCL", "city": "Cluj-Napoca", "lat": 46.783389, "lon": 23.684194},
 }
+
+
+def _scene_airports():
+    airports = []
+    for airport in ROUTE.values():
+        x, z = latlon_to_scene_xz(airport["lat"], airport["lon"])
+        airports.append({
+            "name": f"{airport['name']} {airport['city']}",
+            "lat": airport["lat"],
+            "lon": airport["lon"],
+            "x": x,
+            "y": 0.0,
+            "z": z,
+        })
+    return airports
+
+
+def _scene_map_bounds():
+    min_x, min_z = latlon_to_scene_xz(
+        ROMANIA_MAP_GEO_BOUNDS["min_lat"], ROMANIA_MAP_GEO_BOUNDS["min_lon"]
+    )
+    max_x, max_z = latlon_to_scene_xz(
+        ROMANIA_MAP_GEO_BOUNDS["max_lat"], ROMANIA_MAP_GEO_BOUNDS["max_lon"]
+    )
+    return {"min_x": min_x, "max_x": max_x, "min_z": min_z, "max_z": max_z}
 
 
 @app.get("/health")
@@ -162,6 +211,8 @@ def test_scene_data(req: GridRequest):
     cache_key = f"test-scene-{cfg['lat_step']}"
     cached = load_cache(cache_key)
     if cached and not req.test_mode:
+        cached.setdefault("airports", _scene_airports())
+        cached.setdefault("meta", {}).setdefault("map_bounds", _scene_map_bounds())
         return cached
 
     try:
@@ -201,10 +252,12 @@ def test_scene_data(req: GridRequest):
             "origin_lon": GRID_ORIGIN_LON,
             "scene_unit": "km",
             "vertical_exaggeration": VERTICAL_EXAGGERATION,
+            "map_bounds": _scene_map_bounds(),
             "trajectory_status": "STUB - not real A*, for contract testing only",
         },
         "grid": grid_results,
         "events": all_events,
+        "airports": _scene_airports(),
         "routes": {
             "baseline": baseline_route,
             "optimized": optimized_route,
