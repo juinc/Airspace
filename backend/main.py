@@ -2,13 +2,15 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import numpy as np
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from weather.client import fetch_forecast, parse_response, PRESSURE_LEVELS
 from weather.cache import load_cache, save_cache
 from weather.events import detect_events
 from grid.builder import build_horizontal_grid
+from grid.coordinates import attach_scene_coordinates, GRID_ORIGIN_LAT, GRID_ORIGIN_LON, VERTICAL_EXAGGERATION
+from optimizer.stub_trajectory import generate_stub_route, compute_route_metrics
 
 app = FastAPI(title="Airspace Weather Backend")
 
@@ -22,8 +24,8 @@ DEFAULT_CONFIG = {
 }
 
 ROUTE = {
-    "origin": {"name": "LROP", "lat": 44.572161, "lon": 26.102218},
-    "destination": {"name": "LRCL", "lat": 46.783389, "lon": 23.684194},
+    "origin": {"name": "LCCR", "city": "Craiova", "lat": 44.3180, "lon": 23.8886},
+    "destination": {"name": "LRCL", "city": "Cluj-Napoca", "lat": 46.783389, "lon": 23.684194},
 }
 
 
@@ -34,10 +36,6 @@ def health():
 
 @app.get("/test-weather")
 def test_weather():
-    """
-    STEP 1 OF TESTING: run this first.
-    Fetches real forecast data for just the two airports (2 points).
-    """
     lat_list = [ROUTE["origin"]["lat"], ROUTE["destination"]["lat"]]
     lon_list = [ROUTE["origin"]["lon"], ROUTE["destination"]["lon"]]
 
@@ -48,6 +46,7 @@ def test_weather():
 
     raw = fetch_forecast(lat_list, lon_list)
     results = parse_response(raw, lat_list, lon_list, PRESSURE_LEVELS)
+    results = attach_scene_coordinates(results, PRESSURE_LEVELS)   # ← new line
 
     save_cache(cache_key, results)
     return {
@@ -70,17 +69,19 @@ class GridRequest(BaseModel):
 @app.post("/weather-grid")
 def weather_grid(req: GridRequest):
     """
-    STEP 2 OF TESTING: run this after /test-weather works.
     With test_mode=True, only fetches 4 points.
     """
     overrides = {k: v for k, v in req.dict().items() if v is not None and k != "test_mode"}
     cfg = {**DEFAULT_CONFIG, **overrides}
-
-    points = build_horizontal_grid(
-        cfg["min_lat"], cfg["max_lat"],
-        cfg["min_lon"], cfg["max_lon"],
-        cfg["lat_step"], cfg["lon_step"],
-    )
+        
+    try:
+        points = build_horizontal_grid(
+            cfg["min_lat"], cfg["max_lat"],
+            cfg["min_lon"], cfg["max_lon"],
+            cfg["lat_step"], cfg["lon_step"],
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     if req.test_mode:
         points = points[:4]
@@ -102,38 +103,119 @@ def weather_grid(req: GridRequest):
         "source": "live",
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "point_count": len(points),
+        "scene_config": {
+            "origin_lat": GRID_ORIGIN_LAT,
+            "origin_lon": GRID_ORIGIN_LON,
+            "scene_unit": "km",
+            "vertical_exaggeration": VERTICAL_EXAGGERATION,
+        },
         "data": results,
     }
 
 
 @app.post("/weather-events")
 def weather_events(req: GridRequest):
-    """
-    STEP 3: detects discrete rain/thunderstorm/severe_storm clusters
-    across the full configured grid (ignores test_mode — always full grid).
-    """
     cfg = {**DEFAULT_CONFIG, **{k: v for k, v in req.dict().items() if v is not None and k != "test_mode"}}
 
-    lat_values = list(np.arange(cfg["min_lat"], cfg["max_lat"] + cfg["lat_step"] / 2, cfg["lat_step"]))
-    lon_values = list(np.arange(cfg["min_lon"], cfg["max_lon"] + cfg["lon_step"] / 2, cfg["lon_step"]))
-
-    points = build_horizontal_grid(
-        cfg["min_lat"], cfg["max_lat"],
-        cfg["min_lon"], cfg["max_lon"],
-        cfg["lat_step"], cfg["lon_step"],
-    )
-
-    lat_list = [p["lat"] for p in points]
-    lon_list = [p["lon"] for p in points]
+    if req.test_mode:
+        # quick check: just the two route endpoints, not the full grid
+        lat_list = [ROUTE["origin"]["lat"], ROUTE["destination"]["lat"]]
+        lon_list = [ROUTE["origin"]["lon"], ROUTE["destination"]["lon"]]
+        lat_values = lat_list
+        lon_values = lon_list
+        n_lats, n_lons = 2, 1  # 2 separate single-column "rows" — no adjacency between them
+    else:
+        lat_values = list(np.arange(cfg["min_lat"], cfg["max_lat"] + cfg["lat_step"] / 2, cfg["lat_step"]))
+        lon_values = list(np.arange(cfg["min_lon"], cfg["max_lon"] + cfg["lon_step"] / 2, cfg["lon_step"]))
+        try:
+            points = build_horizontal_grid(cfg["min_lat"], cfg["max_lat"], cfg["min_lon"], cfg["max_lon"],
+                                        cfg["lat_step"], cfg["lon_step"])
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        
+        lat_list = [p["lat"] for p in points]
+        lon_list = [p["lon"] for p in points]
+        n_lats, n_lons = len(lat_values), len(lon_values)
 
     raw = fetch_forecast(lat_list, lon_list)
     results = parse_response(raw, lat_list, lon_list, PRESSURE_LEVELS)
+    results = attach_scene_coordinates(results, PRESSURE_LEVELS)
 
     all_events = []
     for level in PRESSURE_LEVELS:
         for label in ("rain", "thunderstorm", "severe_storm"):
             all_events.extend(
-                detect_events(results, len(lat_values), len(lon_values), lat_values, lon_values, level, label)
+                detect_events(results, n_lats, n_lons, lat_values, lon_values, level, label)
             )
 
-    return {"events": all_events}
+    return {"events": all_events, "checked_points": results}
+
+@app.post("/test-scene-data")
+def test_scene_data(req: GridRequest):
+    """
+    TEMPORARY endpoint for frontend development. Returns the full contract
+    shape — grid, events, baseline/optimized routes, metrics — using the
+    real weather pipeline but a STUBBED trajectory (not real A*).
+    """
+    cfg = {**DEFAULT_CONFIG, **{k: v for k, v in req.dict().items() if v is not None and k != "test_mode"}}
+
+    cache_key = f"test-scene-{cfg['lat_step']}"
+    cached = load_cache(cache_key)
+    if cached and not req.test_mode:
+        return cached
+
+    try:
+        points = build_horizontal_grid(cfg["min_lat"], cfg["max_lat"], cfg["min_lon"], cfg["max_lon"],
+                                        cfg["lat_step"], cfg["lon_step"])
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+    if req.test_mode:
+        points = points[:36]  # smaller subset = faster iteration while frontend is building
+
+    lat_list = [p["lat"] for p in points]
+    lon_list = [p["lon"] for p in points]
+
+    raw = fetch_forecast(lat_list, lon_list)
+    grid_results = parse_response(raw, lat_list, lon_list, PRESSURE_LEVELS)
+    grid_results = attach_scene_coordinates(grid_results, PRESSURE_LEVELS)
+
+    lat_values = sorted(set(p["lat"] for p in points))
+    lon_values = sorted(set(p["lon"] for p in points))
+
+    all_events = []
+    for level in PRESSURE_LEVELS:
+        for label in ("rain", "thunderstorm", "severe_storm"):
+            all_events.extend(
+                detect_events(grid_results, len(lat_values), len(lon_values), lat_values, lon_values, level, label)
+            )
+
+    baseline_route = generate_stub_route(ROUTE["origin"], ROUTE["destination"], grid_results, lateral_offset_km=0.0, altitude_offset_km=0.0)
+    optimized_route = generate_stub_route(ROUTE["origin"], ROUTE["destination"], grid_results, lateral_offset_km=40.0, altitude_offset_km=1.0)
+
+    payload = {
+        "meta": {
+            "source": "live",
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "origin_lat": GRID_ORIGIN_LAT,
+            "origin_lon": GRID_ORIGIN_LON,
+            "scene_unit": "km",
+            "vertical_exaggeration": VERTICAL_EXAGGERATION,
+            "trajectory_status": "STUB - not real A*, for contract testing only",
+        },
+        "grid": grid_results,
+        "events": all_events,
+        "routes": {
+            "baseline": baseline_route,
+            "optimized": optimized_route,
+            "metrics": {
+                "baseline": compute_route_metrics(baseline_route),
+                "optimized": compute_route_metrics(optimized_route),
+            },
+        },
+    }
+
+    if not req.test_mode:
+        save_cache(cache_key, payload)
+
+    return payload

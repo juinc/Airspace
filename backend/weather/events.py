@@ -1,5 +1,6 @@
 import numpy as np
 from scipy import ndimage
+from grid.coordinates import latlon_to_scene_xz, FALLBACK_ALTITUDE_M, altitude_to_scene_y
 
 THRESHOLDS = {
     "rain_mm": 1.0,
@@ -61,16 +62,25 @@ def detect_events(grid_points, n_lats, n_lons, lat_values, lon_values, level, ta
     mask = (labels == target_label)
 
     labeled_array, num_features = ndimage.label(mask)
-
+        
     events = []
     for feature_id in range(1, num_features + 1):
         rows, cols = np.where(labeled_array == feature_id)
+
+        centroid_lat = float(np.mean([lat_values[r] for r in rows]))
+        centroid_lon = float(np.mean([lon_values[c] for c in cols]))
+        x, z = latlon_to_scene_xz(centroid_lat, centroid_lon)
+        y = altitude_to_scene_y(FALLBACK_ALTITUDE_M.get(level, 9200))
+
         events.append({
             "type": target_label,
             "level_hpa": level,
             "centroid": {
-                "lat": float(np.mean([lat_values[r] for r in rows])),
-                "lon": float(np.mean([lon_values[c] for c in cols])),
+                "lat": centroid_lat,
+                "lon": centroid_lon,
+                "x": x,
+                "y": y,
+                "z": z,
             },
             "cell_count": int(len(rows)),
             "bounding_box": {
