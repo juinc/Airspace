@@ -1,0 +1,41 @@
+{
+  "measured_at": "2026-11-01",
+  "revision": "a613932",
+  "environment": {
+    "node": "v26.8.1",
+    "backend_virtualenv_python": "3.12.10",
+    "flutter_sdk": "unavailable on PATH",
+    "browser_device_profile": "not available in this environment"
+  },
+  "vite_production_build": {
+    "status": "passed",
+    "wall_time_seconds": 2.42,
+    "html_kb_gzip": 2.43,
+    "javascript_kb_minified": 715.08,
+    "javascript_kb_gzip": 182.94,
+    "warning": "One minified JavaScript chunk exceeds Vite's 500 KB warning threshold."
+  },
+  "backend_tests": {
+    "status": "blocked by runner temp-directory permissions before complete baseline",
+    "fast_fail_run": {
+      "result": "14 passed, 5 errors",
+      "duration_seconds": 5.06,
+      "error": "pytest could not create tmp_path under the sandbox-owned system Temp directory; rerun with --basetemp inside the workspace."
+    }
+  },
+  "targets": {
+    "cold_load_seconds_4g": null,
+    "scenario_switch_seconds": null,
+    "mobile_fps": null,
+    "javascript_gzip_kb": 182.94,
+    "gpu_memory_mb": null,
+    "backend_p95_ms": null,
+    "response_gzip_kb": null,
+    "draw_calls_per_frame": null,
+    "unmeasured_reason": "No Flutter SDK or browser/device profiling surface is available; backend API timing and response size will be measured after the endpoint contract is repaired."
+  },
+  "aircraft_assets_bytes": null,
+  "weather_assets_bytes": null,
+  "clear_model_bytes": null,
+  "notes": "This is the pre-change baseline. Bundle sizes are the existing Vite build report. Null values are not estimates."
+}
