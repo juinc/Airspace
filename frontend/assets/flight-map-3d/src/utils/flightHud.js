@@ -85,6 +85,16 @@ const HUD_STYLES = `
     letter-spacing: 0.06em;
     color: #46586c;
 }
+@media (max-width: 760px) {
+    .airspace-flight-hud {
+        left: 10px;
+        bottom: calc(160px + env(safe-area-inset-bottom));
+        width: min(272px, calc(100vw - 20px));
+        max-height: 30dvh;
+        overflow-y: auto;
+        padding: 10px 12px 9px;
+    }
+}
 `;
 
 // 10 Hz is plenty for a status panel — writing 15 DOM nodes 60x per second

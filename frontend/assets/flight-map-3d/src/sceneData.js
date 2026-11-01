@@ -26,11 +26,12 @@ const LOW_ALT_TERRAIN_CLEARANCE = 0.8;
 // ---------------------------------------------------------------------------
 
 export function createSceneDataGroup(payload, planeTemplate, initialProgress = 0,
-                                     weatherMeshKit = null, groundSampler = null) {
+                                     weatherMeshKit = null, groundSampler = null,
+                                     includeWeather = true) {
     const group = new THREE.Group();
     const updates = [];
 
-    renderGrid(payload.grid || [], group, weatherMeshKit, updates);
+    if (includeWeather) renderGrid(payload.grid || [], group, weatherMeshKit, updates);
     renderAltitudeLayers(payload.grid || [], group, updates);
     renderAirports(payload.airports || [], group, updates, groundSampler);
 

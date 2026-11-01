@@ -27,6 +27,8 @@ import { checkBackendHealth, fetchSceneData, replanWeatherScene } from './servic
 // ---------------------------------------------------------------------------
 
 const container = document.getElementById('app');
+const isMobileDevice = window.matchMedia('(max-width: 760px), (pointer: coarse)').matches;
+const modelAssetUrl = file => `${import.meta.env.BASE_URL}models/${file}`;
 
 // Gentle canvas fade-in once the first scenario is on screen.
 const bootStyle = document.createElement('style');
@@ -133,18 +135,45 @@ let activePayload;
 let activePlaneTemplate;
 let activeWeatherMeshKit;
 let weatherUpdateTimer;
+let weatherRenderTimer;
 let weatherUpdateNumber = 0;
 let mapMesh;
 let groundSampler = null;
 let requestId = 0;
 
-const mapPromise = loadModel('/models/romania.glb');
-const planeTemplatePromise = createPlaneTemplate();
+const mapPromise = loadModel(modelAssetUrl(isMobileDevice ? 'romania-mobile.glb' : 'romania.glb'));
+const planeTemplatePromise = createPlaneTemplate(
+    isMobileDevice ? modelAssetUrl('plane-mobile.glb') : undefined,
+);
 const weatherKitPromise = loadWeatherMeshKit();
 
 function setStatus(text) {
     if (status) status.textContent = text;
+    const bootStatus = document.getElementById('boot-status');
+    if (bootStatus && !document.body.classList.contains('scene-ready')) {
+        bootStatus.textContent = text;
+    }
 }
+
+function scheduleWeatherRender(payload, scenarioRequestId) {
+    window.clearTimeout(weatherRenderTimer);
+    if (!activeWeatherMeshKit) return;
+
+    weatherRenderTimer = window.setTimeout(() => {
+        if (scenarioRequestId !== requestId || activePayload !== payload) return;
+        const progress = activeDataGroup && activeDataGroup.userData.getFlightProgress
+            ? activeDataGroup.userData.getFlightProgress()
+            : 0;
+        applyScenePayload(payload, progress);
+    }, 250);
+}
+
+weatherKitPromise.then(kit => {
+    activeWeatherMeshKit = kit;
+    if (activePayload) scheduleWeatherRender(activePayload, requestId);
+}, error => {
+    console.warn('Weather kit unavailable:', error);
+});
 
 // Report backend availability early so a dead server is obvious immediately.
 checkBackendHealth().then(health => {
@@ -212,20 +241,39 @@ async function loadScenario(routeProgress = 0.35) {
     setStatus(`Loading ${scenario}…`);
 
     try {
-        // allSettled: a missing map / plane / cloud kit degrades gracefully
-        // instead of taking the whole scene down.
-        const [payloadResult, mapResult, planeResult, kitResult] = await Promise.allSettled([
-            scenario === 'in-flight-replan' && activePayload
-                ? replanWeatherScene(activePayload, routeProgress)
-                : fetchSceneData(scenario, routeProgress),
-            mapPromise,
-            planeTemplatePromise,
-            weatherKitPromise,
-        ]);
+        const payload = await (scenario === 'in-flight-replan' && activePayload
+            ? replanWeatherScene(activePayload, routeProgress)
+            : fetchSceneData(scenario, routeProgress));
         if (currentRequestId !== requestId) return;
 
-        if (payloadResult.status === 'rejected') throw payloadResult.reason;
-        const payload = payloadResult.value;
+        applyScenePayload(payload, 0, false);
+        scheduleWeatherRender(payload, currentRequestId);
+        const bootStatus = document.getElementById('boot-status');
+        if (bootStatus) bootStatus.textContent = 'Scenario ready — preparing terrain and aircraft…';
+        document.body.classList.add('scene-ready');
+
+        const bounds = payload.meta && payload.meta.map_bounds;
+        if (bounds) {
+            const optimizedRoute = (payload.routes && payload.routes.optimized) || [];
+            const routeAltitude = optimizedRoute.length
+                ? optimizedRoute.reduce((total, waypoint) => total + waypoint.y, 0) / optimizedRoute.length
+                : 0;
+            const lookAt = new THREE.Vector3(
+                (bounds.min_x + bounds.max_x) / 2,
+                routeAltitude,
+                (bounds.min_z + bounds.max_z) / 2,
+            );
+            startCameraTween(lookAt.clone().add(cameraOffset), lookAt);
+        }
+
+        // Terrain and aircraft are large/independent assets. Attach them when
+        // ready, then rebuild once so terrain snapping and flight animation
+        // use their final models without delaying the initial scene.
+        const [mapResult, planeResult] = await Promise.allSettled([
+            mapPromise,
+            planeTemplatePromise,
+        ]);
+        if (currentRequestId !== requestId) return;
 
         if (!mapMesh) {
             if (mapResult.status === 'fulfilled') {
@@ -241,24 +289,11 @@ async function loadScenario(routeProgress = 0.35) {
 
         activePlaneTemplate = planeResult.status === 'fulfilled' ? planeResult.value : null;
         if (planeResult.status === 'rejected') console.warn('Aircraft model unavailable:', planeResult.reason);
-        activeWeatherMeshKit = kitResult.status === 'fulfilled' ? kitResult.value : null;
-        if (kitResult.status === 'rejected') console.warn('Weather kit unavailable:', kitResult.reason);
-
-        applyScenePayload(payload, 0);
-
-        const bounds = payload.meta && payload.meta.map_bounds;
-        if (bounds) {
-            const optimizedRoute = (payload.routes && payload.routes.optimized) || [];
-            const routeAltitude = optimizedRoute.length
-                ? optimizedRoute.reduce((total, waypoint) => total + waypoint.y, 0) / optimizedRoute.length
-                : 0;
-            const lookAt = new THREE.Vector3(
-                (bounds.min_x + bounds.max_x) / 2,
-                routeAltitude,
-                (bounds.min_z + bounds.max_z) / 2,
-            );
-            startCameraTween(lookAt.clone().add(cameraOffset), lookAt);
+        if (mapMesh || activePlaneTemplate) {
+            applyScenePayload(payload, routeProgress, false);
+            scheduleWeatherRender(payload, currentRequestId);
         }
+        if (bootStatus) bootStatus.textContent = 'Scene ready.';
 
         scheduleWeatherUpdate();
     } catch (error) {
@@ -280,7 +315,7 @@ scenarioSelector.addEventListener('change', () => {
     loadScenario(routeProgress);
 });
 
-function applyScenePayload(payload, initialProgress = 0) {
+function applyScenePayload(payload, initialProgress = 0, includeWeather = true) {
     // Clear any lingering inspection marker/panel from the previous scene.
     routeInspector.clear();
 
@@ -288,8 +323,9 @@ function applyScenePayload(payload, initialProgress = 0) {
         payload,
         activePlaneTemplate,
         initialProgress,
-        activeWeatherMeshKit,
+        includeWeather ? activeWeatherMeshKit : null,
         groundSampler,
+        includeWeather,
     );
     if (activeDataGroup) {
         scene.remove(activeDataGroup);
@@ -337,7 +373,8 @@ async function runWeatherUpdate() {
         nextPayload.meta.trajectory_status = nextPayload.weather_update.replanned
             ? `Weather update ${updateNumber}: ${nextPayload.meta.trajectory_status}`
             : `Weather update ${updateNumber}: route unchanged below drastic threshold`;
-        applyScenePayload(nextPayload, nextPayload.weather_update.replanned ? 0 : progress);
+        applyScenePayload(nextPayload, nextPayload.weather_update.replanned ? 0 : progress, false);
+        scheduleWeatherRender(nextPayload, requestId);
     } catch (error) {
         console.error('Weather update failed:', error);
         setStatus(`Weather update failed: ${error.message}`);
@@ -367,10 +404,32 @@ window.addEventListener('message', event => {
 loadScenario();
 
 let lastFrameTime = performance.now();
+let frameInterval = navigator.connection && navigator.connection.saveData ? 1000 / 30 : 0;
+
+if (typeof navigator.getBattery === 'function') {
+    navigator.getBattery().then(battery => {
+        const updateBatteryFrameLimit = () => {
+            frameInterval = battery.level <= 0.2 && !battery.charging
+                ? 1000 / 30
+                : (navigator.connection && navigator.connection.saveData ? 1000 / 30 : 0);
+        };
+        updateBatteryFrameLimit();
+        battery.addEventListener('levelchange', updateBatteryFrameLimit);
+        battery.addEventListener('chargingchange', updateBatteryFrameLimit);
+    }, error => {
+        console.debug('Battery status is unavailable:', error);
+    });
+}
+
+if (import.meta.env.DEV) {
+    window.__AIRSPACE_PERFORMANCE__ = () => renderer.getInfo();
+}
 
 function animate() {
     requestAnimationFrame(animate);
+    if (document.hidden) return;
     const now = performance.now();
+    if (frameInterval && now - lastFrameTime < frameInterval) return;
     // Clamp huge deltas (e.g. after tab switch) so nothing teleports.
     const delta = Math.min((now - lastFrameTime) / 1000, 0.1);
     lastFrameTime = now;
@@ -402,6 +461,9 @@ function animate() {
 }
 
 animate();
+document.addEventListener('visibilitychange', () => {
+    lastFrameTime = performance.now();
+});
 
 window.addEventListener('resize', () => {
     const width = window.innerWidth;
