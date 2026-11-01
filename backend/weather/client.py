@@ -4,7 +4,7 @@ import requests
 
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 
-PRESSURE_LEVELS = [400, 300, 250, 200]
+PRESSURE_LEVELS = [500, 400, 300, 250, 200]
 OPEN_METEO_MODEL = "ecmwf_aifs025_single"
 FORECAST_STEP_HOURS = 6
 FORECAST_DAYS = 2
@@ -151,6 +151,7 @@ def parse_response(raw, lat_list, lon_list, pressure_levels, forecast_index=0):
                 "wind_direction": get("wind_direction"),
                 "vertical_velocity": vertical_velocity,
                 "geopotential_height": get("geopotential_height"),
+                "relative_humidity": humidity,          # ← was missing
                 "exposure_score": score,
             }
 

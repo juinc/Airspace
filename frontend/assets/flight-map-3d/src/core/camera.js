@@ -1,15 +1,16 @@
 import * as THREE from 'three';
 
-export function createCamera(targetY = 0) {
+export function createCamera() {
     const camera = new THREE.PerspectiveCamera(
         45,
-        window.innerWidth / window.innerHeight,
-        0.1,
-        5000
+        (window.innerWidth || 1) / (window.innerHeight || 1),
+        0.5,
+        6000,
     );
 
-    camera.position.set(0, targetY + 300, 400);
-    camera.lookAt(0, targetY, 0);
+    // High opening position — the intro glide sweeps down into the corridor.
+    camera.position.set(-260, 430, 660);
+    camera.lookAt(0, 0, 0);
 
     return camera;
 }

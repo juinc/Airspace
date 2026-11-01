@@ -29,7 +29,7 @@ no geographic or meteorological logic lives in the frontend at all.
 ┌──────────────────────┐        JSON over HTTP        ┌──────────────────────┐
 │   Flutter App        │ ───────────────────────────▶ │  FastAPI Backend     │
 │   (webview_flutter)  │ ◀─────────────────────────── │  (Python)            │
-└──────────┬───────────┘                               └───────────┬─────────┘
+└──────────┬───────────┘                              └────────────┬─────────┘
            │ loads bundled                                         │ fetches
            │ Vite build                                            ▼
            ▼                                              ┌──────────────────┐

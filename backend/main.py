@@ -10,7 +10,7 @@ from weather.client import (
     FORECAST_DAYS,
     FORECAST_STEP_HOURS,
     OPEN_METEO_MODEL,
-    PRESSURE_LEVELS,
+    PRESSURE_LEVELS as _CLIENT_PRESSURE_LEVELS,
     build_variable_list,
     fetch_forecast,
     parse_response,
@@ -19,6 +19,7 @@ from weather.client import (
 from weather.cache import build_cache_key, load_cache, save_cache
 from weather.events import detect_events
 from grid.builder import build_horizontal_grid
+from grid.romania_mask import inside_with_buffer, ROMANIA_BORDER
 from grid.coordinates import (
     attach_scene_coordinates,
     latlon_to_scene_xz,
@@ -27,13 +28,13 @@ from grid.coordinates import (
     VERTICAL_EXAGGERATION,
 )
 from optimizer.astar import (
-    ALTITUDE_CHANGE_PENALTY_MIN,
+    AircraftProfile,
     BASELINE_PRESSURE_LEVEL,
-    CRUISE_SPEED_KMH,
     WEATHER_WEIGHTS,
     compute_route_metrics,
     assess_route_weather_change,
     estimate_route_position,
+    extend_with_flight_phases,
     find_avoided_high_exposure_cells,
     find_path,
     normalize_mode,
@@ -44,7 +45,10 @@ from synthetic_scenarios import (
     build_synthetic_events,
     build_synthetic_grid,
     build_synthetic_routes,
+    spawn_route_blockage,
 )
+
+PRESSURE_LEVELS = sorted(set(_CLIENT_PRESSURE_LEVELS) | {500})
 
 app = FastAPI(title="Airspace Weather Backend")
 app.add_middleware(
@@ -59,10 +63,10 @@ app.add_middleware(
 )
 
 DEFAULT_CONFIG = {
-    "min_lat": 43.75,
-    "max_lat": 47.50,
-    "min_lon": 22.75,
-    "max_lon": 27.00,
+    "min_lat": 43.5,
+    "max_lat": 48.5,
+    "min_lon": 19.5,
+    "max_lon": 30.0,
     "lat_step": 0.25,
     "lon_step": 0.25,
 }
@@ -78,6 +82,67 @@ ROUTE = {
     "origin": {"name": "LCCR", "city": "Craiova", "lat": 44.3180, "lon": 23.8886},
     "destination": {"name": "LRCL", "city": "Cluj-Napoca", "lat": 46.783389, "lon": 23.684194},
 }
+
+_FETCH_CHUNK_SIZE = 100
+
+# v3: invalidates every cached scene payload generated before the
+# continuous-vertical-profile rewrite. Without this, old elbow-shaped
+# routes keep being served from cache no matter what astar.py does.
+SCENE_CACHE_VERSION = "full-aifs-scene-v3"
+
+
+class AircraftProfileRequest(BaseModel):
+    """Aircraft parameters. All values are simulation assumptions."""
+    cruise_speed_kmh: float = Field(default=800, ge=300, le=1000)
+    climb_rate_m_per_min: float = Field(default=600, ge=60, le=1500)
+    descent_rate_m_per_min: float = Field(default=600, ge=60, le=1500)
+    altitude_change_penalty_min: float = Field(default=0.5, ge=0, le=30)
+    weight_kg: float = Field(default=73000, ge=5000, le=500000)
+    fuel_burn_kg_per_hour: float = Field(default=2500, ge=100, le=20000)
+    fuel_capacity_kg: float = Field(default=20000, ge=1000, le=200000)
+    max_altitude_km: float = Field(default=12.5, ge=5, le=20)
+
+
+def _aircraft_profile(req) -> AircraftProfile:
+    return AircraftProfile(**req.aircraft.model_dump())
+
+
+class GridRequest(BaseModel):
+    min_lat: Optional[float] = None
+    max_lat: Optional[float] = None
+    min_lon: Optional[float] = None
+    max_lon: Optional[float] = None
+    lat_step: Optional[float] = None
+    lon_step: Optional[float] = None
+    test_mode: bool = True
+    mode: str = "Balanced"
+    aircraft: AircraftProfileRequest = Field(default_factory=AircraftProfileRequest)
+
+
+class OptimizeRequest(GridRequest):
+    test_mode: bool = False
+
+
+class ReplanRequest(BaseModel):
+    mode: str = "Balanced"
+    route_progress: float = Field(default=0.35, ge=0, le=1)
+    weather_seed: int = 0
+    previous_grid: list[dict]
+    previous_route: list[dict]
+    previous_source: str = "synthetic"
+    grid_config: dict = Field(default_factory=dict)
+    aircraft: AircraftProfileRequest = Field(default_factory=AircraftProfileRequest)
+
+
+_NON_GRID_FIELDS = {"test_mode", "mode", "aircraft"}
+
+
+def _grid_overrides(req):
+    return {
+        key: value
+        for key, value in req.model_dump().items()
+        if value is not None and key not in _NON_GRID_FIELDS
+    }
 
 
 def _scene_airports():
@@ -105,6 +170,15 @@ def _scene_map_bounds():
     return {"min_x": min_x, "max_x": max_x, "min_z": min_z, "max_z": max_z}
 
 
+def _scene_romania_border():
+    """Border polygon in scene coordinates, for the frontend outline overlay."""
+    border = []
+    for lon, lat in ROMANIA_BORDER:
+        x, z = latlon_to_scene_xz(lat, lon)
+        border.append({"x": round(x, 3), "z": round(z, 3)})
+    return border
+
+
 def _forecast_cache_key(points):
     return build_cache_key(
         "open-meteo-aifs-raw-v2",
@@ -118,7 +192,7 @@ def _forecast_cache_key(points):
     )
 
 
-def _fetch_weather(points, force_refresh=False):
+def _fetch_weather_chunk(points, force_refresh=False):
     key = _forecast_cache_key(points)
     raw = None if force_refresh else load_cache(key)
     source = "live" if force_refresh else "cache"
@@ -151,6 +225,18 @@ def _fetch_weather(points, force_refresh=False):
     return results, source
 
 
+def _fetch_weather(points, force_refresh=False):
+    all_results = []
+    sources = set()
+    for start in range(0, len(points), _FETCH_CHUNK_SIZE):
+        chunk = points[start:start + _FETCH_CHUNK_SIZE]
+        results, source = _fetch_weather_chunk(chunk, force_refresh=force_refresh)
+        all_results.extend(results)
+        sources.add(source)
+    source = "live" if "live" in sources else "cache"
+    return all_results, source
+
+
 def _forecast_metadata(grid_results):
     valid_times = sorted(
         {
@@ -170,12 +256,14 @@ def _forecast_metadata(grid_results):
     return metadata
 
 
-def _routing_assumptions():
+def _routing_assumptions(profile: AircraftProfile):
     return {
-        "cruise_speed_kmh": CRUISE_SPEED_KMH,
+        "aircraft_profile": profile.as_dict(),
         "baseline_pressure_level_hpa": BASELINE_PRESSURE_LEVEL,
-        "altitude_change_penalty_min": ALTITUDE_CHANGE_PENALTY_MIN,
-        "climb_descent_model": "constant_cruise_speed",
+        "climb_descent_model": "parallel_climb_max_time",
+        "phase_geometry": "full_route_continuous_vertical_profile",
+        "weight_model": "climb_rate_scaled_by_reference_weight_ratio",
+        "fuel_model": "linear_burn_rate_times_modeled_time",
         "terrain_clearance_validated": False,
         "weather_hard_exclusion": False,
         "exposure_bands_are_advisory": True,
@@ -195,7 +283,7 @@ def test_weather():
         for airport in ROUTE.values()
     ]
     results, source = _fetch_weather(points)
-    results = attach_scene_coordinates(results, PRESSURE_LEVELS)   # ← new line
+    results = attach_scene_coordinates(results, PRESSURE_LEVELS)
     return {
         "source": source,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
@@ -204,38 +292,8 @@ def test_weather():
     }
 
 
-class GridRequest(BaseModel):
-    min_lat: Optional[float] = None
-    max_lat: Optional[float] = None
-    min_lon: Optional[float] = None
-    max_lon: Optional[float] = None
-    lat_step: Optional[float] = None
-    lon_step: Optional[float] = None
-    test_mode: bool = True
-    mode: str = "Balanced"
-
-
-class OptimizeRequest(GridRequest):
-    test_mode: bool = False
-
-
-class ReplanRequest(BaseModel):
-    mode: str = "Balanced"
-    route_progress: float = Field(default=0.35, ge=0, le=1)
-    weather_seed: int = 0
-    previous_grid: list[dict]
-    previous_route: list[dict]
-    previous_source: str = "synthetic"
-    grid_config: dict = Field(default_factory=dict)
-
-
 def _scene_grid(req, force_refresh=False):
-    overrides = {
-        key: value
-        for key, value in req.model_dump().items()
-        if value is not None and key not in {"test_mode", "mode"}
-    }
-    cfg = {**DEFAULT_CONFIG, **overrides}
+    cfg = {**DEFAULT_CONFIG, **_grid_overrides(req)}
     try:
         points = build_horizontal_grid(
             cfg["min_lat"],
@@ -244,6 +302,7 @@ def _scene_grid(req, force_refresh=False):
             cfg["max_lon"],
             cfg["lat_step"],
             cfg["lon_step"],
+            mask=inside_with_buffer,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
@@ -255,23 +314,36 @@ def _scene_grid(req, force_refresh=False):
     return cfg, attach_scene_coordinates(grid_results, PRESSURE_LEVELS), source
 
 
-def _scene_routes(grid_results, mode):
+def _scene_routes(grid_results, mode, profile: AircraftProfile):
+    """
+    GUARANTEED smooth profiles: extend_with_flight_phases is applied here,
+    on top of whatever find_path / generate_baseline_route produced. Double
+    application is safe — re-running the envelope math on an already-smooth
+    route returns the same smooth shape.
+    """
     optimized_route = find_path(
-        grid_results, ROUTE["origin"], ROUTE["destination"], mode=mode
+        grid_results, ROUTE["origin"], ROUTE["destination"], mode=mode, profile=profile
+    )
+    optimized_route = extend_with_flight_phases(
+        optimized_route, ROUTE["origin"], ROUTE["destination"], profile, grid_results
     )
     baseline_route = generate_baseline_route(
         ROUTE["origin"],
         ROUTE["destination"],
         grid_results,
         num_points=max(1, len(optimized_route) - 1),
+        profile=profile,
+    )
+    baseline_route = extend_with_flight_phases(
+        baseline_route, ROUTE["origin"], ROUTE["destination"], profile, grid_results
     )
     canonical_mode = normalize_mode(mode)
     return {
         "baseline": baseline_route,
         "optimized": optimized_route,
         "metrics": {
-            "baseline": compute_route_metrics(baseline_route),
-            "optimized": compute_route_metrics(optimized_route),
+            "baseline": compute_route_metrics(baseline_route, profile),
+            "optimized": compute_route_metrics(optimized_route, profile),
         },
         "reasoning": {
             "mode": canonical_mode,
@@ -284,34 +356,11 @@ def _scene_routes(grid_results, mode):
 
 @app.post("/weather-grid")
 def weather_grid(req: GridRequest):
-    """
-    With test_mode=True, only fetches 4 points.
-    """
-    overrides = {
-        k: v
-        for k, v in req.model_dump().items()
-        if v is not None and k not in {"test_mode", "mode"}
-    }
-    cfg = {**DEFAULT_CONFIG, **overrides}
-        
-    try:
-        points = build_horizontal_grid(
-            cfg["min_lat"], cfg["max_lat"],
-            cfg["min_lon"], cfg["max_lon"],
-            cfg["lat_step"], cfg["lon_step"],
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    if req.test_mode:
-        points = points[:4]
-
-    results, source = _fetch_weather(points)
-
+    cfg, results, source = _scene_grid(req)
     return {
         "source": source,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
-        "point_count": len(points),
+        "point_count": len(results),
         **_forecast_metadata(results),
         "scene_config": {
             "origin_lat": GRID_ORIGIN_LAT,
@@ -319,33 +368,29 @@ def weather_grid(req: GridRequest):
             "scene_unit": "km",
             "vertical_exaggeration": VERTICAL_EXAGGERATION,
         },
+        "grid_config": cfg,
         "data": results,
     }
 
 
 @app.post("/weather-events")
 def weather_events(req: GridRequest):
-    cfg = {
-        **DEFAULT_CONFIG,
-        **{
-            k: v
-            for k, v in req.model_dump().items()
-            if v is not None and k not in {"test_mode", "mode"}
-        },
-    }
+    cfg = {**DEFAULT_CONFIG, **_grid_overrides(req)}
 
     if req.test_mode:
-        # quick check: just the two route endpoints, not the full grid
         points = [
             {"lat": airport["lat"], "lon": airport["lon"]}
             for airport in ROUTE.values()
         ]
     else:
         try:
-            points = build_horizontal_grid(cfg["min_lat"], cfg["max_lat"], cfg["min_lon"], cfg["max_lon"],
-                                        cfg["lat_step"], cfg["lon_step"])
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            points = build_horizontal_grid(
+                cfg["min_lat"], cfg["max_lat"], cfg["min_lon"], cfg["max_lon"],
+                cfg["lat_step"], cfg["lon_step"],
+                mask=inside_with_buffer,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
 
     lat_values = sorted({point["lat"] for point in points})
     lon_values = sorted({point["lon"] for point in points})
@@ -363,26 +408,16 @@ def weather_events(req: GridRequest):
 
     return {"source": source, **_forecast_metadata(results), "events": all_events, "checked_points": results}
 
+
 @app.post("/test-scene-data")
 def test_scene_data(req: GridRequest):
-    """
-    Returns the full scene contract with a weather-aware A* optimized route.
-    """
     try:
         mode = normalize_mode(req.mode)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
 
-    cfg = {
-        **DEFAULT_CONFIG,
-        **{
-            key: value
-            for key, value in req.model_dump().items()
-            if value is not None and key not in {"test_mode", "mode"}
-        },
-    }
-
-    _, grid_results, weather_source = _scene_grid(req)
+    profile = _aircraft_profile(req)
+    cfg, grid_results, weather_source = _scene_grid(req)
     forecast_valid_times = sorted(
         {
             point["forecast_time"]
@@ -391,9 +426,10 @@ def test_scene_data(req: GridRequest):
         }
     )
     cache_key = build_cache_key(
-        "full-aifs-scene",
+        SCENE_CACHE_VERSION,
         config=cfg,
         mode=mode,
+        aircraft=req.aircraft.model_dump(),
         model=OPEN_METEO_MODEL,
         variables=build_variable_list(),
         pressure_levels=PRESSURE_LEVELS,
@@ -407,6 +443,7 @@ def test_scene_data(req: GridRequest):
         cached_meta = cached.setdefault("meta", {})
         cached_meta["source"] = "cache"
         cached_meta.setdefault("map_bounds", _scene_map_bounds())
+        cached_meta.setdefault("romania_border", _scene_romania_border())
         return cached
 
     lat_values = sorted(set(point["lat"] for point in grid_results))
@@ -420,7 +457,7 @@ def test_scene_data(req: GridRequest):
             )
 
     try:
-        routes = _scene_routes(grid_results, mode)
+        routes = _scene_routes(grid_results, mode, profile)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
 
@@ -434,8 +471,9 @@ def test_scene_data(req: GridRequest):
             "scene_unit": "km",
             "vertical_exaggeration": VERTICAL_EXAGGERATION,
             "map_bounds": _scene_map_bounds(),
+            "romania_border": _scene_romania_border(),
             "grid_config": cfg,
-            "routing_assumptions": _routing_assumptions(),
+            "routing_assumptions": _routing_assumptions(profile),
             "trajectory_status": f"A* optimized route ({mode})",
         },
         "grid": grid_results,
@@ -452,11 +490,11 @@ def test_scene_data(req: GridRequest):
 
 @app.post("/optimize")
 def optimize(req: OptimizeRequest):
-    """Return baseline and A* routes for the selected weather preference."""
     try:
         mode = normalize_mode(req.mode)
+        profile = _aircraft_profile(req)
         _, grid_results, _ = _scene_grid(req)
-        return _scene_routes(grid_results, mode)
+        return _scene_routes(grid_results, mode, profile)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
 
@@ -468,12 +506,14 @@ def replan(req: ReplanRequest):
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
+    profile = _aircraft_profile(req)
+
     if req.previous_source == "synthetic":
-        config = {**DEFAULT_CONFIG, **req.grid_config}
-        updated_grid = build_synthetic_grid(
-            "drastic-weather-change",
-            config,
-            weather_seed=req.weather_seed,
+        updated_grid = spawn_route_blockage(
+            req.previous_grid,
+            req.previous_route,
+            req.route_progress,
+            req.weather_seed,
         )
         source = "synthetic"
     else:
@@ -488,8 +528,9 @@ def replan(req: ReplanRequest):
         mode,
         updated_grid,
         source,
-        "drastic-weather-change",
+        "in-flight-replan",
         req.weather_seed,
+        profile,
     )
 
 
@@ -499,25 +540,31 @@ def test_scenario(
     mode: str = "Balanced",
     route_progress: float = 0.35,
     weather_seed: int = 0,
+    aircraft: Optional[AircraftProfileRequest] = None,
 ):
-    """Return a synthetic scenario or a live Open-Meteo scene."""
+    profile = AircraftProfile(**aircraft.model_dump()) if aircraft else AircraftProfile()
+
     if scenario == "real-meteo":
-        payload = test_scene_data(GridRequest(test_mode=False, mode=mode))
+        grid_request = GridRequest(test_mode=False, mode=mode)
+        if aircraft:
+            grid_request.aircraft = aircraft
+        payload = test_scene_data(grid_request)
         meta = payload.setdefault("meta", {})
         meta["scenario"] = scenario
         meta["scenario_title"] = "Open-Meteo forecast"
         return payload
 
-    if scenario == "drastic-weather-change":
+    if scenario == "in-flight-replan":
         if not 0 <= route_progress <= 1:
             raise HTTPException(status_code=400, detail="route_progress must be between 0 and 1")
         try:
             previous_grid = build_synthetic_grid("clear-airspace", DEFAULT_CONFIG)
-            previous_routes = build_synthetic_routes(previous_grid, ROUTE, mode)
-            updated_grid = build_synthetic_grid(
-                scenario,
-                DEFAULT_CONFIG,
-                weather_seed=weather_seed,
+            previous_routes = build_synthetic_routes(previous_grid, ROUTE, mode, profile)
+            updated_grid = spawn_route_blockage(
+                previous_grid,
+                previous_routes["optimized"],
+                route_progress,
+                weather_seed,
             )
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
@@ -530,11 +577,15 @@ def test_scenario(
             "synthetic",
             scenario,
             weather_seed,
+            profile,
         )
 
+    if scenario not in SCENARIO_TITLES or scenario == "clear-airspace":
+        raise HTTPException(status_code=404, detail=f"Unknown scenario: {scenario}")
+
     try:
-        grid = build_synthetic_grid(scenario, DEFAULT_CONFIG)
-        routes = build_synthetic_routes(grid, ROUTE, mode)
+        grid = build_synthetic_grid(scenario, DEFAULT_CONFIG, weather_seed)
+        routes = build_synthetic_routes(grid, ROUTE, mode, profile)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
 
@@ -550,8 +601,9 @@ def test_scenario(
             "scene_unit": "km",
             "vertical_exaggeration": VERTICAL_EXAGGERATION,
             "map_bounds": _scene_map_bounds(),
+            "romania_border": _scene_romania_border(),
             "grid_config": DEFAULT_CONFIG,
-            "routing_assumptions": _routing_assumptions(),
+            "routing_assumptions": _routing_assumptions(profile),
             "trajectory_status": f"Synthetic A* route ({routes['reasoning']['mode']})",
         },
         "grid": grid,
@@ -570,7 +622,9 @@ def _weather_replan_payload(
     source,
     scenario,
     weather_seed=0,
+    profile=None,
 ):
+    profile = profile or AircraftProfile()
     if len(previous_route) < 2:
         raise HTTPException(status_code=400, detail="previous_route needs at least two waypoints")
     try:
@@ -589,6 +643,10 @@ def _weather_replan_payload(
             ROUTE["destination"],
             mode=canonical_mode,
             start_position=resume_position,
+            profile=profile,
+        )
+        optimized_route = extend_with_flight_phases(
+            optimized_route, ROUTE["origin"], ROUTE["destination"], profile, updated_grid
         )
         trajectory_status = f"A* replanned from {route_progress:.0%} route progress"
     else:
@@ -600,14 +658,18 @@ def _weather_replan_payload(
         ROUTE["destination"],
         updated_grid,
         num_points=max(1, len(optimized_route) - 1),
+        profile=profile,
+    )
+    baseline_route = extend_with_flight_phases(
+        baseline_route, ROUTE["origin"], ROUTE["destination"], profile, updated_grid
     )
     routes = {
         "baseline": baseline_route,
         "previous_optimized": previous_route,
         "optimized": optimized_route,
         "metrics": {
-            "baseline": compute_route_metrics(baseline_route),
-            "optimized": compute_route_metrics(optimized_route),
+            "baseline": compute_route_metrics(baseline_route, profile),
+            "optimized": compute_route_metrics(optimized_route, profile),
         },
         "reasoning": {
             "mode": canonical_mode,
@@ -622,7 +684,7 @@ def _weather_replan_payload(
         "meta": {
             "source": source,
             "scenario": scenario,
-            "scenario_title": "Drastic weather change and in-flight replan",
+            "scenario_title": SCENARIO_TITLES.get(scenario, "In-flight replan"),
             "fetched_at": datetime.now(timezone.utc).isoformat(),
             **valid_times,
             "origin_lat": GRID_ORIGIN_LAT,
@@ -630,8 +692,9 @@ def _weather_replan_payload(
             "scene_unit": "km",
             "vertical_exaggeration": VERTICAL_EXAGGERATION,
             "map_bounds": _scene_map_bounds(),
+            "romania_border": _scene_romania_border(),
             "grid_config": DEFAULT_CONFIG,
-            "routing_assumptions": _routing_assumptions(),
+            "routing_assumptions": _routing_assumptions(profile),
             "trajectory_status": trajectory_status,
         },
         "grid": updated_grid,

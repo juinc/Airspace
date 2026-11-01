@@ -3,6 +3,7 @@ from grid.coordinates import (
     altitude_to_scene_y,
     latlon_to_scene_xz,
 )
+from optimizer.astar import AircraftProfile, annotate_route, extend_with_flight_phases
 
 BASELINE_PRESSURE_LEVEL = 250
 
@@ -13,8 +14,8 @@ def _nearest_baseline_level(lat, lon, grid_points, pressure_level):
     nearest_distance = float("inf")
 
     for point in grid_points:
-        level_data = point.get("levels", {}).get(
-            pressure_level, point.get("levels", {}).get(str(pressure_level))
+        level_data = point.get("levels").get(
+            pressure_level, point.get("levels").get(str(pressure_level))
         )
         if not level_data:
             continue
@@ -45,12 +46,18 @@ def generate_baseline_route(
     grid_points,
     num_points,
     pressure_level=BASELINE_PRESSURE_LEVEL,
+    profile=None,
 ):
-    """Interpolate a straight airport-to-airport baseline at 250 hPa."""
+    """
+    Straight airport-to-airport baseline at 250 hPa, wrapped in the same
+    takeoff/landing phases as the optimized route so both metrics compare
+    complete ground-to-ground flights.
+    """
     if pressure_level not in FALLBACK_ALTITUDE_M:
         raise ValueError(f"Unsupported baseline pressure level: {pressure_level}")
     if num_points < 1:
         raise ValueError("num_points must be at least one")
+    profile = profile or AircraftProfile()
 
     waypoints = []
     for index in range(num_points + 1):
@@ -71,9 +78,14 @@ def generate_baseline_route(
                 "altitude_km": altitude_km,
                 "pressure_level": pressure_level,
                 "exposure_score": exposure,
+                "phase": "cruise",
             }
         )
-    return waypoints
+
+    route = extend_with_flight_phases(
+        waypoints, origin, destination, profile, grid_points
+    )
+    return annotate_route(route, profile)
 
 
 generate_stub_route = generate_baseline_route
