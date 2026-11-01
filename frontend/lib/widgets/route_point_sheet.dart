@@ -1,95 +1,208 @@
 import 'package:flutter/material.dart';
+import 'package:pointer_interceptor/pointer_interceptor.dart';
 
 import '../models/airspace_models.dart';
 
-/// Bottom sheet shown when the user taps a route in the 3D scene —
-/// the native replacement for the old in-WebView inspect panel.
+/// Bottom sheet shown when a route point is clicked in the 3D scene.
+/// Driven by the `airspace:route-point` bridge payload.
+///
+/// The root is wrapped in PointerInterceptor: on Flutter web the 3D scene
+/// is an IFrameElement that eats every pointer event over its area —
+/// without the shield the close button and drag handle are dead.
 class RoutePointSheet extends StatelessWidget {
   final RoutePointInfo info;
 
   const RoutePointSheet({super.key, required this.info});
 
+  static const _routeColors = {
+    'baseline': Color(0xFF8FA3B5),
+    'previous_optimized': Color(0xFF7A8EA0),
+    'optimized': Color(0xFFE3B563),
+  };
+
+  static const _phaseColors = {
+    'TAKEOFF': Color(0xFFFFD166),
+    'CLIMB': Color(0xFF4DD8FF),
+    'CRUISE': Color(0xFF35D07F),
+    'DESCENT': Color(0xFFE2B65F),
+    'LANDED': Color(0xFF93A7B4),
+  };
+
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: EdgeInsets.fromLTRB(
-          16, 16, 16, 16 + MediaQuery.of(context).padding.bottom),
-      decoration: const BoxDecoration(
-        color: Color(0xFF0C131D),
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+    final maxHeight = MediaQuery.of(context).size.height * 0.72;
+
+    return PointerInterceptor(
+      child: Padding(
+        padding: EdgeInsets.only(bottom: bottomInset),
+        child: Container(
+          constraints: BoxConstraints(maxHeight: maxHeight),
+          margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+          decoration: _glassDecoration(topRadius: 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 11, vertical: 3),
-                decoration: BoxDecoration(
-                  color: info.route == 'optimized'
-                      ? const Color(0xFFE3B563)
-                      : info.route == 'baseline'
-                          ? const Color(0xFF5F7F9B)
-                          : const Color(0xFF8A97A5),
-                  borderRadius: BorderRadius.circular(999),
+              // Drag handle + close row.
+              _buildHeader(context),
+
+              Flexible(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildTitle(),
+                      const SizedBox(height: 12),
+                      _sectionLabel('POSITION'),
+                      _row('Latitude', '${info.lat.toStringAsFixed(5)}°'),
+                      _row('Longitude', '${info.lon.toStringAsFixed(5)}°'),
+                      _row('Altitude',
+                          '${info.altitudeKm.toStringAsFixed(2)} km'),
+                      _row('Scene x / y / z',
+                          '${_fmt(info.lat)} · scene units in payload'),
+                      const SizedBox(height: 12),
+                      _sectionLabel('ROUTE CONTEXT'),
+                      _row('Route progress',
+                          info.routeProgress == null ? '—' : '${(info.routeProgress * 100).toStringAsFixed(1)}%'),
+                      _row('Pressure level',
+                          info.pressureLevel == null ? '—' : '${info.pressureLevel} hPa'),
+                      _row('Weather exposure',
+                          info.exposureScore == null ? '—' : '${info.exposureScore.toStringAsFixed(1)} / 100'),
+                      _row('Flight phase', info.phase ?? '—'),
+                      _row('Fuel remaining',
+                          info.fuelRemainingKg == null ? '—' : '${info.fuelRemainingKg} kg'),
+                      const SizedBox(height: 12),
+                      _sectionLabel('WEATHER AT NEAREST CELL'),
+                      _row('Temperature',
+                          info.temperature == null ? '—' : '${info.temperature.toStringAsFixed(1)} °C'),
+                      _row('Wind',
+                          info.windSpeed == null || info.windDirection == null
+                              ? _orDash(
+                                  info.windSpeed == null
+                                      ? null
+                                      : '${info.windSpeed.toStringAsFixed(1)} km/h',
+                                  info.windDirection == null
+                                      ? null
+                                      : '${info.windDirection.toStringAsFixed(0)}°',
+                                )
+                              : '${info.windSpeed.toStringAsFixed(1)} km/h · ${info.windDirection.toStringAsFixed(0)}°'),
+                      _row('Humidity',
+                          info.relativeHumidity == null ? '—' : '${info.relativeHumidity.toStringAsFixed(0)}%'),
+                      _row('Cloud cover',
+                          info.cloudCover == null ? '—' : '${info.cloudCover.toStringAsFixed(0)}%'),
+                      _row('Precipitation',
+                          info.precipitation == null ? '—' : '${info.precipitation.toStringAsFixed(1)} mm/h'),
+                      _row('CAPE',
+                          info.cape == null ? '—' : '${info.cape.toStringAsFixed(0)} J/kg'),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Weather values come from the nearest grid cell at the '
+                        'closest pressure level to the clicked altitude.',
+                        style: TextStyle(fontSize: 8.5, color: Color(0xFF46586C)),
+                      ),
+                    ],
+                  ),
                 ),
-                child: Text(
-                  info.route.toUpperCase(),
-                  style: const TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 1.4,
-                      color: Color(0xFF0A0F16)),
-                ),
-              ),
-              const Spacer(),
-              IconButton(
-                icon: const Icon(Icons.close,
-                    color: Color(0xFF5C7086), size: 18),
-                onPressed: () => Navigator.of(context).pop(),
               ),
             ],
           ),
-          const SizedBox(height: 10),
-          _row('Phase', (info.phase ?? '').toUpperCase()),
-          _row('Latitude', '${info.lat.toStringAsFixed(4)}°'),
-          _row('Longitude', '${info.lon.toStringAsFixed(4)}°'),
-          _row('Altitude', '${info.altitudeKm.toStringAsFixed(2)} km'),
-          _row(
-              'Progress',
-              info.routeProgress == null
-                  ? '—'
-                  : '${(info.routeProgress! * 100).toStringAsFixed(1)}%'),
-          _row('Level',
-              info.pressureLevel == null ? '—' : '${info.pressureLevel} hPa'),
-          _row('Exposure',
-              info.exposureScore == null ? '—' : '${info.exposureScore} / 100'),
-          if (info.fuelRemainingKg != null) ...[
-            const _SectionTitle('Aircraft'),
-            _row('Fuel remaining', '${info.fuelRemainingKg} kg'),
-          ],
-          const _SectionTitle('Nearest forecast cell'),
-          _row('Temperature',
-              info.temperature == null ? '—' : '${info.temperature} °C'),
-          _row(
-              'Wind',
-              info.windSpeed == null
-                  ? '—'
-                  : '${info.windSpeed} km/h${info.windDirection != null ? ' @ ${info.windDirection}°' : ''}'),
-          _row('Humidity',
-              info.relativeHumidity == null ? '—' : '${info.relativeHumidity} %'),
-          _row('Cloud cover',
-              info.cloudCover == null ? '—' : '${info.cloudCover} %'),
-          _row('Precipitation',
-              info.precipitation == null ? '—' : '${info.precipitation} mm'),
-          _row('CAPE', info.cape == null ? '—' : '${info.cape} J/kg'),
-        ],
+        ),
       ),
     );
   }
+
+  // -- Header: drag handle + close button --------------------------------
+
+  Widget _buildHeader(BuildContext context) {
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        Column(
+          children: [
+            const SizedBox(height: 8),
+            Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: const Color(0x33FFFFFF),
+                borderRadius: BorderRadius.circular(999),
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+        Positioned(
+          top: 4,
+          right: 8,
+          child: _CloseButton(onTap: () => Navigator.of(context).maybePop()),
+        ),
+      ],
+    );
+  }
+
+  // -- Title: route badge + phase badge -----------------------------------
+
+  Widget _buildTitle() {
+    final routeColor = _routeColors[info.route] ?? const Color(0xFF4DD8FF);
+    final phaseColor = _phaseColors[info.phase ?? ''] ?? const Color(0xFF4DD8FF);
+
+    return Row(
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: routeColor.withValues(alpha: 0.16),
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: routeColor.withValues(alpha: 0.55)),
+          ),
+          child: Text(
+            info.route.toUpperCase(),
+            style: TextStyle(
+              fontSize: 9.5,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1.2,
+              color: routeColor,
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        if (info.phase != null)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: phaseColor.withValues(alpha: 0.16),
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(color: phaseColor.withValues(alpha: 0.55)),
+            ),
+            child: Text(
+              info.phase!,
+              style: TextStyle(
+                fontSize: 9.5,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 1.2,
+                color: phaseColor,
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  // -- Row helpers ---------------------------------------------------------
+
+  Widget _sectionLabel(String text) => Padding(
+        padding: const EdgeInsets.only(bottom: 6),
+        child: Text(
+          text,
+          style: const TextStyle(
+            fontSize: 9,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 2.4,
+            color: Color(0xFF5C7086),
+          ),
+        ),
+      );
 
   Widget _row(String key, String value) => Padding(
         padding: const EdgeInsets.symmetric(vertical: 1.5),
@@ -97,39 +210,60 @@ class RoutePointSheet extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Text(key,
-                style: const TextStyle(
-                    color: Color(0xFF8FA3B5), fontSize: 12)),
-            Text(value,
-                style: const TextStyle(
-                    color: Color(0xFFEEF3F8),
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600)),
-          ],
-        ),
-      );
-}
-
-class _SectionTitle extends StatelessWidget {
-  final String text;
-  const _SectionTitle(this.text);
-
-  @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.only(top: 10, bottom: 3),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Divider(color: Color(0x14FFFFFF), height: 1),
-            const SizedBox(height: 7),
+                style:
+                    const TextStyle(color: Color(0xFF8FA3B5), fontSize: 11.5)),
             Text(
-              text.toUpperCase(),
+              value,
               style: const TextStyle(
-                  fontSize: 9,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 2.2,
-                  color: Color(0xFF5C7086)),
+                color: Color(0xFFEEF3F8),
+                fontSize: 11.5,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ],
         ),
       );
+
+  String _fmt(num value) => value.toStringAsFixed(2);
+
+  /// Joins up to two values with ' · ', skipping nulls; '—' if both null.
+  String _orDash(String? a, String? b) {
+    final parts = [a, b].whereType<String>().toList();
+    return parts.isEmpty ? '—' : parts.join(' · ');
+  }
 }
+
+class _CloseButton extends StatelessWidget {
+  final VoidCallback onTap;
+
+  const _CloseButton({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Container(
+        width: 30,
+        height: 30,
+        decoration: BoxDecoration(
+          color: const Color(0x14FFFFFF),
+          shape: BoxShape.circle,
+          border: Border.all(color: const Color(0x2AFFFFFF)),
+        ),
+        child: const Icon(Icons.close, size: 15, color: Color(0xFF8FA3B5)),
+      ),
+    );
+  }
+}
+
+BoxDecoration _glassDecoration({double topRadius = 12}) => BoxDecoration(
+      color: const Color(0xF20F1319),
+      borderRadius: BorderRadius.only(
+        topLeft: Radius.circular(topRadius),
+        topRight: Radius.circular(topRadius),
+        bottomLeft: Radius.circular(topRadius),
+        bottomRight: Radius.circular(topRadius),
+      ),
+      border: Border.all(color: const Color(0x17FFFFFF)),
+    );

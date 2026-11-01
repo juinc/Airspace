@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:pointer_interceptor/pointer_interceptor.dart';
 
 import '../models/airspace_models.dart';
 import '../services/airspace_bridge_service.dart';
@@ -22,9 +23,9 @@ class AirspacePage extends StatefulWidget {
 }
 
 class _AirspacePageState extends State<AirspacePage> {
-  /// Mirrors the scene's SCENARIOS registry (src/main.js) and the backend's
-  /// /test-scenarios/{id} endpoints. Hardcoded so the dropdown is populated
-  /// IMMEDIATELY — never empty, never dependent on the bridge arriving.
+  /// Mirrors the scene's SCENARIOS registry (src/main.js). Hardcoded so
+  /// the dropdown is populated IMMEDIATELY — never empty, never dependent
+  /// on the bridge arriving.
   static const List<ScenarioInfo> _knownScenarios = [
     ScenarioInfo(id: 'crossroads-storm', title: 'Storm crossroads — 3 aircraft'),
     ScenarioInfo(id: 'converge-bucharest', title: 'Converge on Bucharest — 4 aircraft'),
@@ -121,14 +122,13 @@ class _AirspacePageState extends State<AirspacePage> {
     });
     _host.loadScenario(id);
 
-    // Failsafe: if the scene does not confirm the new scenario within 4 s
-    // (command lost, bridge glitch), reload the iframe with ?scenario=<id>
-    // — the scene reads that at boot, so this path always works.
+    // Failsafe: if the scene does not confirm within 4 s, reload the
+    // iframe with ?scenario=<id> — the scene reads that at boot.
     _scenarioConfirmTimer?.cancel();
     _scenarioConfirmTimer = Timer(const Duration(seconds: 4), () {
       if (!mounted) return;
       if (_selectedScenario == id && _payload?.scenario != id) {
-        debugPrint('[bridge] no confirm for $id — reloading scene with URL param');
+        debugPrint('[bridge] no confirm for $id — reloading scene via URL param');
         _host.reloadWithScenario(id);
       }
     });
@@ -163,145 +163,159 @@ class _AirspacePageState extends State<AirspacePage> {
           children: [
             Positioned.fill(child: _host.buildView(widget.sceneUrl)),
 
+            // Loading / error overlay — shielded so the iframe can't eat
+            // taps while it's up.
             if (!_sceneReady)
               Positioned.fill(
-                child: Container(
-                  color: const Color(0xFF05080E),
-                  alignment: Alignment.center,
-                  padding: const EdgeInsets.symmetric(horizontal: 32),
-                  child: _loadError != null
-                      ? Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Icon(Icons.cloud_off,
-                                color: Color(0xFFE2836F), size: 36),
-                            const SizedBox(height: 14),
-                            Text(
-                              _loadError!,
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(
-                                  fontSize: 12.5,
-                                  color: Color(0xFF8FA3B5),
-                                  height: 1.6),
-                            ),
-                          ],
-                        )
-                      : Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Text(
-                              'AIRSPACE',
-                              style: TextStyle(
-                                  fontSize: 30,
-                                  fontWeight: FontWeight.w200,
-                                  letterSpacing: 8,
-                                  color: Color(0xFFE9EEF4)),
-                            ),
-                            const SizedBox(height: 14),
-                            Text(_statusText,
+                child: PointerInterceptor(
+                  child: Container(
+                    color: const Color(0xFF05080E),
+                    alignment: Alignment.center,
+                    padding: const EdgeInsets.symmetric(horizontal: 32),
+                    child: _loadError != null
+                        ? Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.cloud_off,
+                                  color: Color(0xFFE2836F), size: 36),
+                              const SizedBox(height: 14),
+                              Text(
+                                _loadError!,
+                                textAlign: TextAlign.center,
                                 style: const TextStyle(
-                                    fontSize: 11,
-                                    color: Color(0xFF8FA3B5))),
-                            const SizedBox(height: 14),
-                            const SizedBox(
-                              width: 180,
-                              child: LinearProgressIndicator(
-                                minHeight: 2,
-                                color: Color(0xFFE3B563),
-                                backgroundColor: Color(0x14FFFFFF),
+                                    fontSize: 12.5,
+                                    color: Color(0xFF8FA3B5),
+                                    height: 1.6),
                               ),
-                            ),
-                          ],
-                        ),
+                            ],
+                          )
+                        : Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Text(
+                                'AIRSPACE',
+                                style: TextStyle(
+                                    fontSize: 30,
+                                    fontWeight: FontWeight.w200,
+                                    letterSpacing: 8,
+                                    color: Color(0xFFE9EEF4)),
+                              ),
+                              const SizedBox(height: 14),
+                              Text(_statusText,
+                                  style: const TextStyle(
+                                      fontSize: 11,
+                                      color: Color(0xFF8FA3B5))),
+                              const SizedBox(height: 14),
+                              const SizedBox(
+                                width: 180,
+                                child: LinearProgressIndicator(
+                                  minHeight: 2,
+                                  color: Color(0xFFE3B563),
+                                  backgroundColor: Color(0x14FFFFFF),
+                                ),
+                              ),
+                            ],
+                          ),
+                  ),
                 ),
               ),
 
+            // Top bar: status + scenario selector — shielded.
             Positioned(
               top: 10,
               left: 10,
               right: 10,
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: const Color(0xB80D141E),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: const Color(0x17FFFFFF)),
-                      ),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 6,
-                            height: 6,
-                            decoration: const BoxDecoration(
-                              color: Color(0xFF6FD6A0),
-                              shape: BoxShape.circle,
-                              boxShadow: [
-                                BoxShadow(
-                                    color: Color(0xFF6FD6A0), blurRadius: 8)
-                              ],
+              child: PointerInterceptor(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xB80D141E),
+                          borderRadius: BorderRadius.circular(10),
+                          border:
+                              Border.all(color: const Color(0x17FFFFFF)),
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 6,
+                              height: 6,
+                              decoration: const BoxDecoration(
+                                color: Color(0xFF6FD6A0),
+                                shape: BoxShape.circle,
+                                boxShadow: [
+                                  BoxShadow(
+                                      color: Color(0xFF6FD6A0), blurRadius: 8)
+                                ],
+                              ),
                             ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              _statusLine,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                  fontSize: 11, color: Color(0xFF8FA3B5)),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                _statusLine,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    fontSize: 11, color: Color(0xFF8FA3B5)),
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 10),
-                  SizedBox(
-                    width: isPhone ? 220 : 260,
-                    child: ScenarioSelector(
-                      scenarios: _scenarios,
-                      selected: _selectedScenario,
-                      onSelected: _selectScenario,
+                    const SizedBox(width: 10),
+                    SizedBox(
+                      width: isPhone ? 220 : 264,
+                      child: ScenarioSelector(
+                        scenarios: _scenarios,
+                        selected: _selectedScenario,
+                        onSelected: _selectScenario,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
 
+            // Right: metrics + legend — shielded.
             Positioned(
               top: isPhone ? 210 : 96,
               right: 10,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  if (_payload != null)
-                    MetricsPanel(
-                      baseline: _payload!.baseline,
-                      optimized: _payload!.optimized,
-                    ),
-                  const SizedBox(height: 12),
-                  if (_payload != null)
-                    PressureLegend(levels: _payload!.legend),
-                ],
+              child: PointerInterceptor(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    if (_payload != null)
+                      MetricsPanel(
+                        baseline: _payload!.baseline,
+                        optimized: _payload!.optimized,
+                      ),
+                    const SizedBox(height: 12),
+                    if (_payload != null)
+                      PressureLegend(levels: _payload!.legend),
+                  ],
+                ),
               ),
             ),
 
+            // Bottom-left: aircraft status card — shielded.
             if (_flightState != null)
               Positioned(
                 left: 10,
                 bottom: 10,
-                child: AircraftStatusCard(
-                  state: _flightState!,
-                  aircraft:
-                      _payload?.aircraft ?? const AircraftProfileInfo(),
-                  flightCount: _payload?.flightCount ?? 1,
-                  flights: _payload?.flights ?? const [],
-                  selectedIndex: _selectedFlight,
-                  onSelectFlight: (index) => _host.selectFlight(index),
+                child: PointerInterceptor(
+                  child: AircraftStatusCard(
+                    state: _flightState!,
+                    aircraft:
+                        _payload?.aircraft ?? const AircraftProfileInfo(),
+                    flightCount: _payload?.flightCount ?? 1,
+                    flights: _payload?.flights ?? const [],
+                    selectedIndex: _selectedFlight,
+                    onSelectFlight: (index) => _host.selectFlight(index),
+                  ),
                 ),
               ),
           ],
