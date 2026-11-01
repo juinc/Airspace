@@ -135,7 +135,24 @@ will keep serving the old build otherwise.
 | Forecast cadence        | 6-hour steps (native AIFS resolution — UI must show actual forecast-valid timestamps, never implies hourly granularity) |
 | Cache TTL               | 6 hours, matched to forecast step                                                                                       |
 | Default cruise altitude | 250 hPa (10.4 km)                                                                                                       |
-| Assumed cruise speed    | 800 km/h                                                                                                                |
+| CJ3 max cruise speed    | 416 kt / 770.4 km/h                                                                                                     |
+
+## Aircraft model and route separation
+
+Scenarios use the original Cessna Citation CJ3 reference profile. Nominal
+reference figures included in the backend payload are 14,000 lb ramp mass,
+13,870 lb maximum takeoff mass, 12,750 lb maximum landing mass, 4,710 lb
+maximum usable fuel, 45,000 ft service ceiling, and 2,040 nm published range.
+The scenario gross-mass default uses maximum takeoff mass. Fuel flow
+(520 kg/h), descent rate, and route fuel estimates are simulation assumptions,
+not POH/AFM or dispatch data; aircraft-specific limits vary by serial number
+and installed equipment. Do not use this prototype for flight planning.
+
+Multi-flight synthetic scenarios plan optimized routes sequentially and reserve
+each route against later A* searches. En-route centerlines are kept at least
+0.05 km apart in modeled 3D geometry; takeoff and landing segments are excluded
+to allow shared airport terminals. This visualization constraint is not an
+operational separation or collision-avoidance system.
 
 ---
 

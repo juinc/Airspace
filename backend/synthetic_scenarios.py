@@ -10,11 +10,13 @@ from optimizer.astar import (
     AircraftProfile,
     compute_route_metrics,
     estimate_route_position,
-    extend_with_flight_phases,
     find_path,
     normalize_mode,
 )
-from optimizer.stub_trajectory import generate_baseline_route
+from optimizer.stub_trajectory import (
+    generate_baseline_route,
+    match_route_waypoint_count,
+)
 from weather.client import PRESSURE_LEVELS
 from weather.normalize import weather_exposure_score
 
@@ -355,25 +357,22 @@ def build_synthetic_events(grid, pressure_levels=PRESSURE_LEVELS):
     return events
 
 
-def build_synthetic_routes(grid, route, mode="Balanced", profile=None):
+def build_synthetic_routes(grid, route, mode="Balanced", profile=None,
+                           avoid_routes=None):
     canonical_mode = normalize_mode(mode)
     profile = profile or AircraftProfile()
     optimized = find_path(
-        grid, route["origin"], route["destination"], mode=canonical_mode, profile=profile
-    )
-    optimized = extend_with_flight_phases(
-        optimized, route["origin"], route["destination"], profile, grid
+        grid, route["origin"], route["destination"], mode=canonical_mode,
+        profile=profile, avoid_routes=avoid_routes,
     )
     baseline = generate_baseline_route(
         route["origin"],
         route["destination"],
         grid,
-        num_points=max(1, len(optimized) - 1),
+        num_points=1,
         profile=profile,
     )
-    baseline = extend_with_flight_phases(
-        baseline, route["origin"], route["destination"], profile, grid
-    )
+    baseline = match_route_waypoint_count(baseline, len(optimized))
     return {
         "baseline": baseline,
         "optimized": optimized,
@@ -391,18 +390,21 @@ def build_synthetic_routes(grid, route, mode="Balanced", profile=None):
 
 
 def build_multi_flight_routes(grid, flight_pairs, mode="Balanced", profile=None):
-    """One route pair per (origin_code, destination_code) — shared weather grid."""
+    """Build flights in order, reserving each optimized route against later paths."""
     flights = []
+    reserved_routes = []
     for index, (origin_code, destination_code) in enumerate(flight_pairs):
         origin = AIRPORTS[origin_code]
         destination = AIRPORTS[destination_code]
         flight = build_synthetic_routes(
-            grid, {"origin": origin, "destination": destination}, mode, profile
+            grid, {"origin": origin, "destination": destination}, mode, profile,
+            avoid_routes=reserved_routes,
         )
         flight["id"] = f"F{index + 1}"
         flight["origin"] = origin_code
         flight["destination"] = destination_code
         flights.append(flight)
+        reserved_routes.append(flight["optimized"])
     return flights
 
 

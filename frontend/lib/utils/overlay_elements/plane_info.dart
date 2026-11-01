@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
 
 class PlaneInfo extends StatefulWidget {
-  /// Pass real data from the backend here later, e.g.:
-  /// PlaneInfo(fields: backendData)
+  /// PlaneInfo(fields: backendData) for backend
   final List<Map<String, String>>? fields;
 
   const PlaneInfo({super.key, this.fields});

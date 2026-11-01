@@ -44,13 +44,6 @@ class AirTitle extends StatelessWidget {
                 fontWeight: FontWeight.w900,
               ),
             ),
-            Container(
-              margin: const EdgeInsets.only(top: 2),
-              width: 100,
-              height: 2,
-              color: const Color.fromARGB(255, 21, 83, 153)
-                  .withValues(alpha: 0.6),
-            ),
           ],
         ),
       ],

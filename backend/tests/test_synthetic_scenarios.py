@@ -12,8 +12,12 @@ from optimizer.astar import (
     _nearest_node,
     _neighbors,
     calculate_edge_cost,
+    routes_intersect,
 )
 from synthetic_scenarios import (
+    MULTI_FLIGHT_SCENARIOS,
+    SYNTHETIC_CONFIG,
+    build_multi_flight_routes,
     build_synthetic_events,
     build_synthetic_grid,
     build_synthetic_routes,
@@ -141,6 +145,18 @@ def test_clear_airspace_scenario_has_no_weather_events_and_still_routes():
         for level in point["levels"].values()
     )
     assert len(routes["optimized"]) >= 3
+
+
+@pytest.mark.parametrize("scenario", MULTI_FLIGHT_SCENARIOS)
+def test_multi_flight_scenario_routes_do_not_intersect_enroute(scenario):
+    grid = build_synthetic_grid(scenario, SYNTHETIC_CONFIG)
+    flights = build_multi_flight_routes(
+        grid, MULTI_FLIGHT_SCENARIOS[scenario]["flights"]
+    )
+
+    for index, flight in enumerate(flights):
+        for other in flights[index + 1:]:
+            assert not routes_intersect(flight["optimized"], other["optimized"])
 
 
 def test_layered_random_weather_varies_by_level_and_astar_uses_vertical_path():
