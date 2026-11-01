@@ -1,6 +1,6 @@
 const API_BASE_URL =
     (typeof window !== 'undefined' && window.AIRSPACE_API_BASE) || 'http://localhost:8000';
-const REQUEST_TIMEOUT_MS = 15000;
+const REQUEST_TIMEOUT_MS = 8000;
 
 async function fetchJson(url, options = {}) {
     const controller = new AbortController();
@@ -33,7 +33,7 @@ export async function checkBackendHealth() {
 
 export async function fetchSceneData(scenario, routeProgress = 0.35) {
     const query = new URLSearchParams();
-    if (scenario === 'drastic-weather-change') {
+    if (scenario === 'in-flight-replan') {
         query.set('route_progress', String(routeProgress));
     }
     return fetchJson(`${API_BASE_URL}/test-scenarios/${encodeURIComponent(scenario)}?${query}`);

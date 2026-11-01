@@ -7,7 +7,14 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 /**
  * Creates the WebGL renderer plus a bloom post-processing chain:
  * scene -> bloom (glowing routes, beacons, storm cores) -> tone-mapped output.
- * Uses an MSAA render target so lines and cloud edges stay crisp.
+ *
+ * PERFORMANCE notes:
+ * - Pixel ratio capped at 1.5 — DPR 2 renders 4x the pixels of DPR 1 for
+ *   almost no visible benefit on a dark, moving scene.
+ * - Bloom runs at half resolution (UnrealBloomPass downsamples internally,
+ *   but we hand it a smaller viewport explicitly to cut its cost further).
+ * - MSAA samples reduced 4 -> 2: lines are thin but the bloom pass smooths
+ *   edges anyway, so the extra samples were pure cost.
  */
 export function createRenderer(container, scene, camera) {
     const renderer = new THREE.WebGLRenderer({
@@ -15,7 +22,7 @@ export function createRenderer(container, scene, camera) {
         alpha: false,
         powerPreference: 'high-performance',
     });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     renderer.setSize(container.clientWidth || window.innerWidth, container.clientHeight || window.innerHeight);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.VSMShadowMap;
@@ -30,7 +37,7 @@ export function createRenderer(container, scene, camera) {
     try {
         const target = new THREE.WebGLRenderTarget(size.x, size.y, {
             type: THREE.HalfFloatType,
-            samples: 4, // MSAA — silently ignored on unsupported GPUs
+            samples: 2,
         });
         composer = new EffectComposer(renderer, target);
     } catch (error) {
@@ -57,8 +64,9 @@ export function createRenderer(container, scene, camera) {
 
         setSize(width, height) {
             renderer.setSize(width, height);
-            composer.setSize(width, height);
-            bloomPass.setSize(width, height);
+            const drawingSize = renderer.getDrawingBufferSize(new THREE.Vector2());
+            composer.setSize(drawingSize.x, drawingSize.y);
+            bloomPass.setSize(drawingSize.x, drawingSize.y);
         },
 
         render(delta) {

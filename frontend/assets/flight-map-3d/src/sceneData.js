@@ -7,14 +7,20 @@ import { pointsFromGrid } from './utils/weatherPointAdapters.js';
 
 const PRESSURE_LEVEL_COLORS = [0x6fd3e8, 0x7fd6a4, 0xe3b563, 0xe2836f, 0xb48fe0];
 
-const ROUTE_COLORS = {
-    baseline: 0x4dd8ff,    // cyan dashed
-    previous: 0x7a8ea0,    // neutral gray
-    optimized: 0xffb347,   // warmer amber instead of corporate gold
-};
+// One distinct color per aircraft. Baselines stay uniform gray-dashed so
+// the optimized paths (the stars of the show) always dominate visually.
+const FLIGHT_COLORS = [0xffb347, 0x6fd3e8, 0xb48fe0, 0x7fd6a4, 0xe2836f, 0xf0a35e];
+const BASELINE_COLOR = 0x5f7f9b;
+const PREVIOUS_COLOR = 0x7a8ea0;
 
-const ENDPOINT_GROUND_OFFSET = 0.4;  // scene units above terrain at airports
-const LOW_ALT_TERRAIN_CLEARANCE = 0.8; // min clearance for climb/descent samples
+// PERFORMANCE: hard cap on rendered cloud cells. The full-country grid can
+// produce 4500 candidate cells; rendering them all freezes the main thread
+// for seconds on every scenario load. 900 instances is visually dense and
+// builds in a fraction of the time.
+const MAX_WEATHER_CELLS = 900;
+
+const ENDPOINT_GROUND_OFFSET = 0.4;
+const LOW_ALT_TERRAIN_CLEARANCE = 0.8;
 
 // ---------------------------------------------------------------------------
 // Scene data group
@@ -29,43 +35,73 @@ export function createSceneDataGroup(payload, planeTemplate, initialProgress = 0
     renderAltitudeLayers(payload.grid || [], group, updates);
     renderAirports(payload.airports || [], group, updates, groundSampler);
 
-    const routes = payload.routes || {};
-    const baselineMesh = renderRoute(routes.baseline, ROUTE_COLORS.baseline, PathStyle.DASHED, group, 'baseline', groundSampler);
-    if (baselineMesh && baselineMesh.userData.update) updates.push(baselineMesh.userData.update);
-    // replanned lives INSIDE weather_update, not on the payload root.
-    if (payload.weather_update && payload.weather_update.replanned) {
-        renderRoute(routes.previous_optimized, ROUTE_COLORS.previous, PathStyle.DASHED, group, 'previous_optimized', groundSampler);
-    }
-    const optimizedMesh = renderRoute(routes.optimized, ROUTE_COLORS.optimized, PathStyle.SOLID, group, 'optimized', groundSampler);
-    if (optimizedMesh && optimizedMesh.userData.update) updates.push(optimizedMesh.userData.update);
+    const flights = normalizeFlights(payload);
+    const planeStates = [];
 
-    if (optimizedMesh && planeTemplate) {
-        const optimizedCurve = optimizedMesh.userData.flightCurve;
-        const plane = instantiatePlane(planeTemplate);
+    flights.forEach((flight, index) => {
+        const color = FLIGHT_COLORS[index % FLIGHT_COLORS.length];
 
-        const planeBounds = new THREE.Box3().setFromObject(plane);
-        const planeSize = planeBounds.getSize(new THREE.Vector3());
-        const largestDimension = Math.max(planeSize.x, planeSize.y, planeSize.z);
-        if (largestDimension > 0) plane.scale.multiplyScalar(26 / largestDimension);
-        group.add(plane);
+        const baselineMesh = renderRoute(flight.baseline, BASELINE_COLOR, PathStyle.DASHED, group, 'baseline', groundSampler);
+        if (baselineMesh && baselineMesh.userData.update) updates.push(baselineMesh.userData.update);
+        if (flight.previous_optimized) {
+            renderRoute(flight.previous_optimized, PREVIOUS_COLOR, PathStyle.DASHED, group, 'previous_optimized', groundSampler);
+        }
+        const optimizedMesh = renderRoute(flight.optimized, color, PathStyle.SOLID, group, 'optimized', groundSampler);
+        if (optimizedMesh && optimizedMesh.userData.update) updates.push(optimizedMesh.userData.update);
 
-        const contrail = createContrail();
-        group.add(contrail.line);
+        if (optimizedMesh && planeTemplate) {
+            const optimizedCurve = optimizedMesh.userData.flightCurve;
+            const plane = instantiatePlane(planeTemplate);
 
-        const updatePlane = createPlaneAnimator(
-            plane,
-            optimizedCurve.curve,
-            0.035,
-            initialProgress,
-            contrail,
-        );
-        updates.push(updatePlane);
-        group.userData.getFlightProgress = updatePlane.getProgress;
-        group.userData.getPlaneState = updatePlane.getState;
-    }
+            const planeBounds = new THREE.Box3().setFromObject(plane);
+            const planeSize = planeBounds.getSize(new THREE.Vector3());
+            const largestDimension = Math.max(planeSize.x, planeSize.y, planeSize.z);
+            if (largestDimension > 0) plane.scale.multiplyScalar(26 / largestDimension);
+            group.add(plane);
+
+            const contrail = createContrail();
+            group.add(contrail.line);
+
+            // Stagger speeds so multiple aircraft never move in lockstep.
+            const speed = 0.035 * (1 + index * 0.15);
+            const updatePlane = createPlaneAnimator(
+                plane,
+                optimizedCurve.curve,
+                speed,
+                initialProgress,
+                contrail,
+            );
+            updates.push(updatePlane);
+            planeStates.push(updatePlane.getState);
+        }
+    });
+
+    // HUD / progress read the lead aircraft; the full list is exposed too.
+    group.userData.getFlightProgress = planeStates.length ? () => planeStates[0]().progress : null;
+    group.userData.getPlaneState = planeStates.length ? planeStates[0] : null;
+    group.userData.planeStates = planeStates;
+    group.userData.flightCount = flights.length;
 
     group.userData.update = delta => updates.forEach(fn => fn(delta));
     return group;
+}
+
+function normalizeFlights(payload) {
+    if (Array.isArray(payload.flights) && payload.flights.length) {
+        return payload.flights.map((flight, index) => ({
+            id: flight.id || `F${index + 1}`,
+            baseline: flight.baseline,
+            optimized: flight.optimized,
+            previous_optimized: flight.previous_optimized,
+        }));
+    }
+    const routes = payload.routes || {};
+    return [{
+        id: 'F1',
+        baseline: routes.baseline,
+        optimized: routes.optimized,
+        previous_optimized: routes.previous_optimized,
+    }];
 }
 
 // ---------------------------------------------------------------------------
@@ -144,7 +180,6 @@ export function renderMetrics(metrics) {
     setText('optimized-time', optimized.time_min, ' min');
     setText('optimized-exposure', optimized.avg_exposure);
 
-    // Executive delta row: what the optimizer bought, at a glance.
     const deltaEl = document.getElementById('optimized-delta');
     if (deltaEl) {
         const parts = [];
@@ -216,7 +251,7 @@ export function renderAltitudeLegend(grid) {
             swatch.className = 'altitude-level-swatch';
             const hex = `#${color.toString(16).padStart(6, '0')}`;
             swatch.style.backgroundColor = hex;
-            swatch.style.color = hex; // feeds the glow shadow
+            swatch.style.color = hex;
 
             const pressure = document.createElement('span');
             pressure.textContent = `${level.pressure} hPa`;
@@ -230,7 +265,7 @@ export function renderAltitudeLegend(grid) {
 }
 
 // ---------------------------------------------------------------------------
-// Weather grid — clouds only, no cubes
+// Weather grid — clouds only, capped instance count
 // ---------------------------------------------------------------------------
 
 function renderGrid(grid, group, weatherMeshKit, updates) {
@@ -239,17 +274,25 @@ function renderGrid(grid, group, weatherMeshKit, updates) {
     const allPoints = pointsFromGrid(grid);
     if (allPoints.length === 0) return;
 
-    // Only cluster cells with meaningful forecast exposure. With the
-    // full-country grid, clear-air cells would otherwise merge into one
-    // country-sized cloud mass with giant billboard sprites.
-    const withScores = allPoints.map(point => {
+    // Score every cell once; keep a Map so the cap can sort by severity.
+    const withScores = new Map();
+    allPoints.forEach(point => {
         const levelScores = Object.values(point.levels || {})
             .map(level => (level && Number.isFinite(level.exposure_score)) ? level.exposure_score : 0);
         const own = Number.isFinite(point.exposure_score) ? point.exposure_score : 0;
-        return { point, score: Math.max(own, ...(levelScores.length ? levelScores : [0])) };
+        withScores.set(point, Math.max(own, ...(levelScores.length ? levelScores : [0])));
     });
-    const significant = withScores.filter(entry => entry.score >= 20).map(entry => entry.point);
-    const points = significant.length >= 4 ? significant : allPoints;
+
+    const significant = allPoints.filter(point => withScores.get(point) >= 20);
+    let points = significant.length >= 4 ? significant : allPoints;
+
+    // PERFORMANCE: keep only the most severe cells when the field is huge.
+    if (points.length > MAX_WEATHER_CELLS) {
+        points = points
+            .slice()
+            .sort((a, b) => withScores.get(b) - withScores.get(a))
+            .slice(0, MAX_WEATHER_CELLS);
+    }
 
     const stepX = coordinateStep(points, 'x');
     const stepZ = coordinateStep(points, 'z');
@@ -372,7 +415,6 @@ function createAltitudeLabel(pressure, altitude, color) {
     roundedRectPath(context, 4, 14, 312, 68, 34);
     context.stroke();
 
-    // Colored level dot
     context.fillStyle = hex;
     context.beginPath();
     context.arc(38, 48, 7, 0, Math.PI * 2);
@@ -460,7 +502,6 @@ function renderAirports(airports, group, updates, groundSampler) {
         marker.position.set(airport.x, airport.y, airport.z);
         marker.userData.isAirportMarker = true;
         marker.userData.markerRadius = 6;
-        // Terrain-aware initial height; alignAirportsToMap refines later.
         if (groundSampler) {
             const groundY = groundSampler(airport.x, airport.z);
             if (groundY != null) marker.position.y = groundY + marker.userData.markerRadius;
@@ -532,7 +573,6 @@ function renderAirports(airports, group, updates, groundSampler) {
 }
 
 function createAirportLabel(text) {
-    // Splits "LCCR Craiova" into ICAO code + city for the two-tier label.
     const match = text.match(/^(\S+)\s+(.+)$/);
     const code = match ? match[1] : text;
     const city = match ? match[2] : '';
@@ -590,10 +630,8 @@ function renderRoute(waypoints, color, style, group, label = 'route', groundSamp
             if (groundY == null) return;
             const isEndpoint = index === 0 || index === path.length - 1;
             if (isEndpoint) {
-                // Pin the route physically to the airport's ground position.
                 waypoint.y = groundY + ENDPOINT_GROUND_OFFSET;
             } else if (waypoint.altitude_km != null && waypoint.altitude_km < 2.5) {
-                // Low climb/descent samples must never tunnel through hills.
                 waypoint.y = Math.max(waypoint.y, groundY + LOW_ALT_TERRAIN_CLEARANCE);
             }
         });

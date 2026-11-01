@@ -41,7 +41,10 @@ from optimizer.astar import (
 )
 from optimizer.stub_trajectory import generate_baseline_route
 from synthetic_scenarios import (
+    AIRPORTS,
+    MULTI_FLIGHT_SCENARIOS,
     SCENARIO_TITLES,
+    build_multi_flight_routes,
     build_synthetic_events,
     build_synthetic_grid,
     build_synthetic_routes,
@@ -85,9 +88,6 @@ ROUTE = {
 
 _FETCH_CHUNK_SIZE = 100
 
-# v3: invalidates every cached scene payload generated before the
-# continuous-vertical-profile rewrite. Without this, old elbow-shaped
-# routes keep being served from cache no matter what astar.py does.
 SCENE_CACHE_VERSION = "full-aifs-scene-v3"
 
 
@@ -145,6 +145,28 @@ def _grid_overrides(req):
     }
 
 
+def _airport_scene_entry(code: str) -> dict:
+    airport = AIRPORTS[code]
+    x, z = latlon_to_scene_xz(airport["lat"], airport["lon"])
+    return {
+        "name": f"{airport['name']} {airport['city']}",
+        "lat": airport["lat"],
+        "lon": airport["lon"],
+        "x": x,
+        "y": 0.0,
+        "z": z,
+    }
+
+
+def _airports_for_flight_pairs(pairs) -> list:
+    codes = []
+    for origin, destination in pairs:
+        for code in (origin, destination):
+            if code not in codes:
+                codes.append(code)
+    return [_airport_scene_entry(code) for code in codes]
+
+
 def _scene_airports():
     airports = []
     for airport in ROUTE.values():
@@ -171,7 +193,6 @@ def _scene_map_bounds():
 
 
 def _scene_romania_border():
-    """Border polygon in scene coordinates, for the frontend outline overlay."""
     border = []
     for lon, lat in ROMANIA_BORDER:
         x, z = latlon_to_scene_xz(lat, lon)
@@ -315,12 +336,6 @@ def _scene_grid(req, force_refresh=False):
 
 
 def _scene_routes(grid_results, mode, profile: AircraftProfile):
-    """
-    GUARANTEED smooth profiles: extend_with_flight_phases is applied here,
-    on top of whatever find_path / generate_baseline_route produced. Double
-    application is safe — re-running the envelope math on an already-smooth
-    route returns the same smooth shape.
-    """
     optimized_route = find_path(
         grid_results, ROUTE["origin"], ROUTE["destination"], mode=mode, profile=profile
     )
@@ -543,6 +558,39 @@ def test_scenario(
     aircraft: Optional[AircraftProfileRequest] = None,
 ):
     profile = AircraftProfile(**aircraft.model_dump()) if aircraft else AircraftProfile()
+
+    # --- Multi-flight scenarios: several aircraft across several airports ---
+    if scenario in MULTI_FLIGHT_SCENARIOS:
+        spec = MULTI_FLIGHT_SCENARIOS[scenario]
+        try:
+            grid = build_synthetic_grid(scenario, DEFAULT_CONFIG, weather_seed)
+            flights = build_multi_flight_routes(grid, spec["flights"], mode, profile)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {
+            "meta": {
+                "source": "synthetic",
+                "scenario": scenario,
+                "scenario_title": spec["title"],
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "origin_lat": GRID_ORIGIN_LAT,
+                "origin_lon": GRID_ORIGIN_LON,
+                "scene_unit": "km",
+                "vertical_exaggeration": VERTICAL_EXAGGERATION,
+                "map_bounds": _scene_map_bounds(),
+                "romania_border": _scene_romania_border(),
+                "grid_config": DEFAULT_CONFIG,
+                "routing_assumptions": _routing_assumptions(profile),
+                "trajectory_status": f"A* multi-flight scenario ({len(flights)} aircraft)",
+            },
+            "grid": grid,
+            "events": build_synthetic_events(grid),
+            "airports": _airports_for_flight_pairs(spec["flights"]),
+            "flights": flights,
+            # Legacy compat: single-flight consumers (HUD, metrics panel)
+            # read payload.routes — expose the first flight under that key.
+            "routes": flights[0],
+        }
 
     if scenario == "real-meteo":
         grid_request = GridRequest(test_mode=False, mode=mode)

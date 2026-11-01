@@ -11,7 +11,6 @@ import { loadWeatherMeshKit } from './utils/cloudFactory.js';
 import { createRouteInspector } from './utils/routeInspector.js';
 import { applyExecutiveEnvironment } from './utils/executiveEnvironment.js';
 import { createFlightHud } from './utils/flightHud.js';
-import { updateRomaniaBorder } from './objects/romaniaOutline.js';
 
 import {
     alignAirportsToMap,
@@ -78,8 +77,7 @@ renderer.domElement.addEventListener('wheel', cancelCameraTween, { passive: true
 
 // ---------------------------------------------------------------------------
 // Scenario state — ALL declarations live here, BEFORE anything that
-// closes over them (inspector, HUD, loaders). This is what fixes both TDZ
-// errors: nothing below this point can run "too early" anymore.
+// closes over them (inspector, HUD, loaders).
 // ---------------------------------------------------------------------------
 
 const scenarioSelector = document.getElementById('scenario-selector');
@@ -87,6 +85,11 @@ const status = document.getElementById('data-status');
 const query = new URLSearchParams(window.location.search);
 
 const scenarios = new Set([
+    // Multi-airport / multi-aircraft showcase scenarios first.
+    'crossroads-storm',
+    'converge-bucharest',
+    'carpathian-siege',
+    // Single-corridor classics.
     'storm-wall',
     'over-the-top',
     'low-corridor',
@@ -97,6 +100,9 @@ const scenarios = new Set([
 ]);
 
 const SCENARIO_TITLES = {
+    'crossroads-storm': 'Storm crossroads — 3 aircraft',
+    'converge-bucharest': 'Converge on Bucharest — 4 aircraft',
+    'carpathian-siege': 'Carpathian siege — triangle flights',
     'storm-wall': 'Storm wall',
     'over-the-top': 'Over the top',
     'low-corridor': 'Low corridor',
@@ -106,11 +112,11 @@ const SCENARIO_TITLES = {
     'real-meteo': 'Real meteo (AIFS)',
 };
 
-const initialScenario = query.get('scenario') || 'storm-wall';
+const initialScenario = query.get('scenario') || 'crossroads-storm';
 
 // Rebuild the <select> options from the scenario set so the markup can never
 // drift from the backend's scenario list (a stale option list silently
-// yields value="" — the cause of the earlier "/test-scenarios/" 404).
+// yields value="" — the cause of an earlier 404).
 scenarioSelector.replaceChildren(
     ...[...scenarios].map(key => {
         const option = document.createElement('option');
@@ -119,8 +125,8 @@ scenarioSelector.replaceChildren(
         return option;
     }),
 );
-scenarioSelector.value = scenarios.has(initialScenario) ? initialScenario : 'storm-wall';
-if (!scenarioSelector.value) scenarioSelector.value = 'storm-wall'; // belt and braces
+scenarioSelector.value = scenarios.has(initialScenario) ? initialScenario : 'crossroads-storm';
+if (!scenarioSelector.value) scenarioSelector.value = 'crossroads-storm'; // belt and braces
 
 let activeDataGroup;
 let activePayload;
@@ -166,9 +172,10 @@ const flightHud = createFlightHud({
 });
 
 /**
- * Samples terrain height at (x, z) by raycasting down onto the Romania map.
- * Used to pin route endpoints to the airports and keep low waypoints above
- * terrain. Returns null when no map is loaded.
+ * Terrain height sampler with a result cache. Waypoints repeat heavily
+ * across routes and airports (shared endpoints, dense resampling), so the
+ * cache eliminates most of the expensive full-mesh raycasts that used to
+ * freeze the tab on every scenario load. Returns null when no map is loaded.
  */
 function createGroundSampler(map) {
     if (!map) return null;
@@ -177,12 +184,17 @@ function createGroundSampler(map) {
     const mapBounds = new THREE.Box3().setFromObject(map);
     const raycaster = new THREE.Raycaster();
     raycaster.far = mapBounds.getSize(new THREE.Vector3()).y + 4;
+    const cache = new Map();
 
     return (x, z) => {
+        const key = `${x.toFixed(1)}|${z.toFixed(1)}`;
+        if (cache.has(key)) return cache.get(key);
         raycaster.ray.origin.set(x, mapBounds.max.y + 2, z);
         raycaster.ray.direction.set(0, -1, 0);
         const surface = raycaster.intersectObject(map, true)[0];
-        return surface ? surface.point.y : null;
+        const height = surface ? surface.point.y : null;
+        cache.set(key, height);
+        return height;
     };
 }
 
@@ -232,7 +244,7 @@ async function loadScenario(routeProgress = 0.35) {
         activeWeatherMeshKit = kitResult.status === 'fulfilled' ? kitResult.value : null;
         if (kitResult.status === 'rejected') console.warn('Weather kit unavailable:', kitResult.reason);
 
-        applyScenePayload(payload, 0, groundSampler);
+        applyScenePayload(payload, 0);
 
         const bounds = payload.meta && payload.meta.map_bounds;
         if (bounds) {
@@ -277,7 +289,7 @@ function applyScenePayload(payload, initialProgress = 0) {
         activePlaneTemplate,
         initialProgress,
         activeWeatherMeshKit,
-        groundSampler,   
+        groundSampler,
     );
     if (activeDataGroup) {
         scene.remove(activeDataGroup);
