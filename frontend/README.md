@@ -107,17 +107,21 @@ a WebView asset — it does not run a dev server. Build the scene before
 running Flutter:
 
 ```sh
-cd frontend/assets/flight-map-3d
-npm install
-npm run build
-cd ../../..
-flutter run
+cd frontend
+./run_flutter.ps1 -Device chrome
 ```
 
 The Vite build uses relative asset URLs specifically so it loads correctly
 from Flutter's asset bundle rather than requiring a live server at runtime.
 **Re-run `npm run build` any time the Three.js source changes** — Flutter
 will keep serving the old build otherwise.
+
+The Windows helper verifies the generated scene entry before Flutter starts.
+Stop and relaunch an already-running Flutter app after rebuilding; hot reload
+cannot add generated files to its existing asset manifest. Use
+`-Device windows` or an Android device ID to target another Flutter platform.
+Opening `index.html` with a `file://` URL is unsupported; use `npm run dev` for
+the standalone browser preview or the helper for the Flutter interface.
 
 ---
 

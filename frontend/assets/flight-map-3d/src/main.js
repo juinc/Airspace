@@ -314,13 +314,14 @@ function applyScenePayload(payload, initialProgress = 0, includeWeather = true) 
 
 function createScenarioSummary(payload, scenario) {
     const routes = payload.routes || {};
+    const defaultAirports = payload.airports || [];
     const rawFlights = Array.isArray(payload.flights) && payload.flights.length
         ? payload.flights
         : [{ id: 'F1', ...routes }];
     const flights = rawFlights.map((flight, index) => ({
         id: flight.id || `F${index + 1}`,
-        origin: flight.origin || null,
-        destination: flight.destination || null,
+        origin: flight.origin || defaultAirports[0]?.name || null,
+        destination: flight.destination || defaultAirports[defaultAirports.length - 1]?.name || null,
         metrics: flight.metrics || (index === 0 ? routes.metrics : null),
     }));
     const pressureLevels = new Map();
