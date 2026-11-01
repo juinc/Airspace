@@ -3,22 +3,51 @@ import 'dart:convert';
 import 'dart:html' as html;
 import 'dart:ui_web' as ui_web;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 
 import 'airspace_bridge_service.dart';
 
 /// Web host (Chrome/Edge): the scene lives in an IFrameElement. The scene's
-/// JS bridge posts every event to window.parent — which is THIS window —
-/// and listens for postMessage commands, so no extra JS glue is needed.
+/// JS bridge posts every event to window.parent as a JSON string — parsed
+/// here. Commands go back the same way (Dart Maps don't survive the
+/// browser's structured clone).
 class AirspaceWebviewHost {
   final AirspaceBridgeService bridge;
   html.IFrameElement? _iframe;
   StreamSubscription<html.MessageEvent>? _messageSubscription;
   bool _registered = false;
+  String? _baseUrl;
 
-  AirspaceWebviewHost(this.bridge);
+  AirspaceWebviewHost(this.bridge) {
+    // Registered in the CONSTRUCTOR, not buildView: this must exist before
+    // the iframe ever loads, and must not depend on build being called.
+    _messageSubscription = html.window.onMessage.listen(_onMessage);
+  }
+
+  void _onMessage(html.MessageEvent event) {
+    final data = event.data;
+    if (data is Map) {
+      final map = Map<String, dynamic>.from(data);
+      if ((map['type'] as String?)?.startsWith('airspace:') ?? false) {
+        bridge.handleRawMessage(map);
+      }
+    } else if (data is String) {
+      // Scene events arrive as JSON strings.
+      try {
+        final decoded = jsonDecode(data);
+        if (decoded is Map<String, dynamic> &&
+            (decoded['type'] as String?)?.startsWith('airspace:') == true) {
+          bridge.handleRawMessage(decoded);
+        }
+      } catch (_) {
+        // Not our message — ignore.
+      }
+    }
+  }
 
   Widget buildView(String url) {
+    _baseUrl = url;
     if (!_registered) {
       _registered = true;
 
@@ -35,42 +64,29 @@ class AirspaceWebviewHost {
           return iframe;
         },
       );
-
-      // Every scene event arrives here (scene posts to window.parent).
-      _messageSubscription = html.window.onMessage.listen((event) {
-        final data = event.data;
-        if (data is Map) {
-          final map = Map<String, dynamic>.from(data);
-          if ((map['type'] as String?)?.startsWith('airspace:') ?? false) {
-            bridge.handleRawMessage(map);
-          }
-        } else if (data is String) {
-          // Some browsers deliver structured objects as JSON strings.
-          try {
-            final decoded = jsonDecode(data);
-            if (decoded is Map<String, dynamic> &&
-                (decoded['type'] as String?)?.startsWith('airspace:') ==
-                    true) {
-              bridge.handleRawMessage(decoded);
-            }
-          } catch (_) {
-            // Not our message — ignore.
-          }
-        }
-      });
     }
     return const HtmlElementView(viewType: 'airspace_scene');
   }
 
-  /// The scene listens for window 'message' events and dispatches them —
-  /// so posting the command to the iframe is all we need.
-  ///
-  /// Commands are posted as JSON STRINGS: Dart Maps do not survive the
-  /// browser's structured clone, so posting the Map directly arrived as
-  /// an empty object and commands were silently dropped. The scene's
-  /// bridge parses string payloads.
   Future<void> dispatch(Map<String, dynamic> command) async {
-    _iframe?.contentWindow?.postMessage(jsonEncode(command), '*');
+    final frame = _iframe;
+    if (frame == null) {
+      debugPrint('[bridge] dispatch dropped — iframe not built yet');
+      return;
+    }
+    frame.contentWindow?.postMessage(jsonEncode(command), '*');
+  }
+
+  /// Hard fallback: reload the iframe with ?scenario=<id>. The scene reads
+  /// that at boot, so this works even if the command channel is broken.
+  Future<void> reloadWithScenario(String id) async {
+    final frame = _iframe;
+    final base = _baseUrl;
+    if (frame == null || base == null) return;
+    final uri = Uri.parse(base);
+    final query = Map<String, String>.from(uri.queryParameters)
+      ..['scenario'] = id;
+    frame.src = uri.replace(queryParameters: query).toString();
   }
 
   Future<void> loadScenario(String id, {double? routeProgress}) => dispatch({
@@ -92,4 +108,8 @@ class AirspaceWebviewHost {
 
   Future<void> selectFlight(int index) =>
       dispatch({'type': 'airspace:selectFlight', 'index': index});
+
+  void dispose() {
+    _messageSubscription?.cancel();
+  }
 }

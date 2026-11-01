@@ -7,27 +7,19 @@ import { pointsFromGrid } from './utils/weatherPointAdapters.js';
 
 const PRESSURE_LEVEL_COLORS = [0x6fd3e8, 0x7fd6a4, 0xe3b563, 0xe2836f, 0xb48fe0];
 
-// One distinct color per aircraft. Baselines stay uniform gray-dashed so
-// the optimized paths (the stars of the show) always dominate visually.
 const FLIGHT_COLORS = [0xffb347, 0x6fd3e8, 0xb48fe0, 0x7fd6a4, 0xe2836f, 0xf0a35e];
 const BASELINE_COLOR = 0x5f7f9b;
 const PREVIOUS_COLOR = 0x7a8ea0;
 
-// AGGRESSIVE: rendered cloud cells scale with the device tier. 120 low-poly
-// instances still reads as a full storm field; 4500-instance builds froze
-// weak phones outright.
 const MAX_WEATHER_CELLS = { low: 120, mid: 300, high: 500 };
 
 const ENDPOINT_GROUND_OFFSET = 0.4;
 const LOW_ALT_TERRAIN_CLEARANCE = 0.8;
 
-const LAYER_NAMES = ['weather', 'grid', 'airports', 'routes', 'aircraft'];
+// Aircraft click-picking: world-space radius of the invisible hit sphere.
+const AIRCRAFT_HIT_RADIUS = 24;
 
-// ---------------------------------------------------------------------------
-// Scene data group — built ONCE per payload. Weather has its own rebuildable
-// layer (group.userData.updateWeather) so the kit arriving late, or a
-// weather refresh, never rebuilds routes/planes/labels again.
-// ---------------------------------------------------------------------------
+const LAYER_NAMES = ['weather', 'grid', 'airports', 'routes', 'aircraft'];
 
 export function createSceneDataGroup(payload, planeTemplate, initialProgress = 0,
                                      weatherMeshKit = null, groundSampler = null,
@@ -52,7 +44,20 @@ export function createSceneDataGroup(payload, planeTemplate, initialProgress = 0
         weatherUpdates = [];
         disposeLayerChildren(layers.weather);
         if (!kit) return;
-        renderGrid(grid || [], layers.weather, kit, weatherUpdates, quality);
+
+        const layerUpdates = [];
+        renderGrid(grid || [], layers.weather, kit, layerUpdates, quality);
+
+        // *** THE CLOUD BUG FIX ***
+        // The weather layer's update callbacks MUST be merged into the main
+        // update list. Previously they were collected into a side array that
+        // nothing ever read, so cloud instances were written ONCE at spawn
+        // scale 0 and never animated — every cloud in every scenario was
+        // rendered microscopic and invisible.
+        layerUpdates.forEach(fn => {
+            updates.push(fn);
+            weatherUpdates.push(fn);
+        });
     };
 
     if (includeWeather) buildWeather(payload.grid || [], weatherMeshKit);
@@ -84,22 +89,21 @@ export function createSceneDataGroup(payload, planeTemplate, initialProgress = 0
             if (largestDimension > 0) plane.scale.multiplyScalar(26 / largestDimension);
             layers.aircraft.add(plane);
 
-            // --- Aircraft selection: tag for picking + an invisible
-            // oversized hit target (planes are tiny at corridor scale).
             plane.userData.isAircraft = true;
             plane.userData.flightIndex = index;
             plane.userData.flightId = flight.id;
+            const planeScale = plane.scale.x || 1;
             const hitProxy = new THREE.Mesh(
-                new THREE.SphereGeometry(20, 8, 6),
+                new THREE.SphereGeometry(1, 8, 6),
                 new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }),
             );
+            hitProxy.scale.setScalar(AIRCRAFT_HIT_RADIUS / planeScale);
             plane.add(hitProxy);
             aircraftMeshes.push(plane);
 
             const contrail = createContrail();
             layers.aircraft.add(contrail.line);
 
-            // Stagger speeds so multiple aircraft never move in lockstep.
             const speed = 0.035 * (1 + index * 0.15);
             const updatePlane = createPlaneAnimator(
                 plane,
@@ -113,9 +117,8 @@ export function createSceneDataGroup(payload, planeTemplate, initialProgress = 0
         }
     });
 
-    // HUD / progress read the selected aircraft; the full list is exposed too.
     group.userData.getFlightProgress = planeStates.length ? () => planeStates[0]().progress : null;
-    group.userData.getPlaneState = planeStates.length ? planeStates[0] : null;
+    group.userData.getPlaneState = planeStates.length ? () => planeStates[0]() : null;
     group.userData.planeStates = planeStates;
     group.userData.aircraftMeshes = aircraftMeshes;
     group.userData.flightIds = flights.map(flight => flight.id);
@@ -147,10 +150,6 @@ function normalizeFlights(payload) {
     }];
 }
 
-// ---------------------------------------------------------------------------
-// Legend extraction — plain data for the Flutter legend panel.
-// ---------------------------------------------------------------------------
-
 export function extractPressureLevels(grid) {
     const levels = new Map();
     grid.forEach(point => {
@@ -176,10 +175,6 @@ export function extractPressureLevels(grid) {
                 .toString(16).padStart(6, '0')}`,
         }));
 }
-
-// ---------------------------------------------------------------------------
-// Disposal — shared geometries/materials/textures survive scenario switches.
-// ---------------------------------------------------------------------------
 
 function collectDisposables(root, geometries, materials, textures) {
     root.traverse(object => {
@@ -222,10 +217,6 @@ function disposeLayerChildren(layerGroup) {
     disposeCollected(geometries, materials, textures);
 }
 
-// ---------------------------------------------------------------------------
-// Airports — aligned via the O(1) vertex heightmap sampler (no raycasts).
-// ---------------------------------------------------------------------------
-
 export function alignAirportsToMap(group, groundSampler) {
     if (!groundSampler) return;
 
@@ -240,12 +231,11 @@ export function alignAirportsToMap(group, groundSampler) {
     });
 }
 
-// ---------------------------------------------------------------------------
-// Weather grid — clouds only, capped instance count
-// ---------------------------------------------------------------------------
-
 function renderGrid(grid, layerGroup, weatherMeshKit, updates, quality) {
-    if (!weatherMeshKit) return;
+    if (!weatherMeshKit) {
+        console.warn('[weather] no mesh kit yet — clouds skipped this build');
+        return;
+    }
 
     const allPoints = pointsFromGrid(grid);
     if (allPoints.length === 0) {
@@ -255,12 +245,9 @@ function renderGrid(grid, layerGroup, weatherMeshKit, updates, quality) {
 
     const scoreOf = point => (Number.isFinite(point.score) ? point.score : 0);
 
-    // Prefer significant cells; fall back to everything so the sky is
-    // never empty when the forecast is calm.
     const significant = allPoints.filter(point => scoreOf(point) >= 20);
     let points = significant.length >= 4 ? significant : allPoints;
 
-    // PERFORMANCE: keep only the most severe cells when the field is huge.
     const maxCells = MAX_WEATHER_CELLS[quality] ?? MAX_WEATHER_CELLS.high;
     if (points.length > maxCells) {
         points = points
@@ -289,12 +276,8 @@ function renderGrid(grid, layerGroup, weatherMeshKit, updates, quality) {
     if (markers.userData.update) updates.push(markers.userData.update);
     layerGroup.add(markers);
 
-    console.log(`[weather] ${allPoints.length} grid cells -> ${points.length} rendered in ${clusters.length} clusters`);
+    console.log(`[weather] ${allPoints.length} cells -> ${points.length} rendered, ${clusters.length} clusters, kit ok`);
 }
-
-// ---------------------------------------------------------------------------
-// Altitude layers
-// ---------------------------------------------------------------------------
 
 function renderAltitudeLayers(grid, layerGroup, updates, quality) {
     const levels = new Map();
@@ -371,8 +354,6 @@ function renderAltitudeLayers(grid, layerGroup, updates, quality) {
             outlineMaterial.opacity = 0.35 + 0.22 * (0.5 + 0.5 * Math.sin(t * 1.4));
         });
 
-        // AGGRESSIVE: canvas-texture label sprites are skipped on low-end —
-        // the Flutter legend panel shows the same information for free.
         const altitude = median(data.altitudes);
         if (quality !== 'low' && Number.isFinite(altitude)) {
             const label = createAltitudeLabel(`${pressure} hPa`, `${altitude.toFixed(1)} km`, color);
@@ -424,10 +405,6 @@ function createAltitudeLabel(pressure, altitude, color) {
     label.renderOrder = 3;
     return label;
 }
-
-// ---------------------------------------------------------------------------
-// Airports — gold executive markers
-// ---------------------------------------------------------------------------
 
 let beamTextureCache = null;
 function beamTexture() {
@@ -597,10 +574,6 @@ function createAirportLabel(text) {
     return label;
 }
 
-// ---------------------------------------------------------------------------
-// Routes — raw backend paths, terrain-snapped, tagged for the inspector
-// ---------------------------------------------------------------------------
-
 function renderRoute(waypoints, color, style, layerGroup, label = 'route', groundSampler = null, quality = 'high') {
     if (!Array.isArray(waypoints) || waypoints.length < 2 || !waypoints.every(hasPosition)) return null;
 
@@ -619,11 +592,7 @@ function renderRoute(waypoints, color, style, layerGroup, label = 'route', groun
         });
     }
 
-    const curve = FlightCurve.fromPath({
-        path,
-        color,
-        style,
-    });
+    const curve = FlightCurve.fromPath({ path, color, style });
     const mesh = curve.createMesh(quality);
     mesh.userData.flightCurve = curve;
     mesh.userData.routeLabel = label;
@@ -632,10 +601,6 @@ function renderRoute(waypoints, color, style, layerGroup, label = 'route', groun
     layerGroup.add(mesh);
     return mesh;
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function roundedRectPath(context, x, y, width, height, radius) {
     context.beginPath();

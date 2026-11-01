@@ -12,16 +12,17 @@ import 'airspace_bridge_service.dart';
 class AirspaceWebviewHost {
   final AirspaceBridgeService bridge;
   WebViewController? _controller;
+  String? _baseUrl;
 
   AirspaceWebviewHost(this.bridge);
 
   Widget buildView(String url) {
     // Windows desktop: webview_flutter has no implementation there.
-    // Check BEFORE constructing a controller.
     if (Platform.isWindows) {
       return const _UnsupportedPlatform();
     }
 
+    _baseUrl = url;
     final controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..addJavaScriptChannel(
@@ -50,6 +51,16 @@ class AirspaceWebviewHost {
     await controller.runJavaScript(
       'window.airspaceBridge && window.airspaceBridge.dispatch($encoded);',
     );
+  }
+
+  Future<void> reloadWithScenario(String id) async {
+    final controller = _controller;
+    final base = _baseUrl;
+    if (controller == null || base == null) return;
+    final uri = Uri.parse(base);
+    final query = Map<String, String>.from(uri.queryParameters)
+      ..['scenario'] = id;
+    await controller.loadRequest(uri.replace(queryParameters: query));
   }
 
   Future<void> loadScenario(String id, {double? routeProgress}) => dispatch({
@@ -81,7 +92,7 @@ class _UnsupportedPlatform extends StatelessWidget {
         child: Center(
           child: Text(
             'Windows desktop has no WebView in this build.\n'
-            'Run on Chrome (flutter run -d chrome) or an Android device.',
+            'Quit and run:  flutter run -d chrome',
             textAlign: TextAlign.center,
             style: TextStyle(color: Color(0xFF8FA3B5), fontSize: 13),
           ),

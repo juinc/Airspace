@@ -4,13 +4,18 @@
  * OUTBOUND (JS -> Flutter), fanned out over every available channel:
  *   1. flutter_inappwebview.callHandler('onAirspaceEvent', message)  — Android/iOS
  *   2. window.webkit.messageHandlers.airspace.postMessage(message)   — iOS WKWebView
- *   3. window.parent.postMessage(message, '*')                       — dev browser / hosts
+ *   3. window.parent.postMessage(JSON string, '*')                   — Flutter web / hosts
+ *
+ *   The postMessage channel carries JSON STRINGS, not objects: on Flutter
+ *   web (dart2js) a plain JS object arriving via postMessage is NOT a
+ *   Dart Map, so `data is Map` silently failed and every scene event was
+ *   dropped. Strings survive the structured clone and the Dart host
+ *   jsonDecodes them.
  *
  * INBOUND (Flutter -> JS), two supported paths:
  *   A. webView.evaluateJavascript("window.airspaceBridge.dispatch({type:'…', …})")
- *   B. webView.postWebMessage / window.postMessage({type:'…', …}) — listened here.
- *      Flutter web posts commands as JSON STRINGS (Dart Maps do not survive
- *      the browser's structured clone), so string payloads are parsed here.
+ *   B. postMessage — Flutter web posts commands as JSON strings (Dart Maps
+ *      don't survive the structured clone), parsed here.
  */
 
 const OUTBOUND_CHANNELS = [
@@ -32,8 +37,10 @@ const OUTBOUND_CHANNELS = [
         }
     },
     message => {
-        if (window.parent && window.parent !== window) window.parent.postMessage(message, '*');
-        window.postMessage(message, '*');
+        // Flutter web host — MUST be a string (see header comment).
+        const json = JSON.stringify(message);
+        if (window.parent && window.parent !== window) window.parent.postMessage(json, '*');
+        window.postMessage(json, '*');
     },
 ];
 
@@ -71,9 +78,7 @@ export function createBridge() {
 
     window.addEventListener('message', event => {
         let data = event.data;
-        // Flutter web posts commands as JSON strings — Dart Maps don't
-        // survive the browser's structured clone, so posting the Map
-        // directly arrived as an empty object and commands were dropped.
+        // Both Flutter web directions use JSON strings — parse them here.
         if (typeof data === 'string') {
             try {
                 data = JSON.parse(data);

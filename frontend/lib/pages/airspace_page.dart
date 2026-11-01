@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../models/airspace_models.dart';
@@ -21,13 +22,30 @@ class AirspacePage extends StatefulWidget {
 }
 
 class _AirspacePageState extends State<AirspacePage> {
+  /// Mirrors the scene's SCENARIOS registry (src/main.js) and the backend's
+  /// /test-scenarios/{id} endpoints. Hardcoded so the dropdown is populated
+  /// IMMEDIATELY — never empty, never dependent on the bridge arriving.
+  static const List<ScenarioInfo> _knownScenarios = [
+    ScenarioInfo(id: 'crossroads-storm', title: 'Storm crossroads — 3 aircraft'),
+    ScenarioInfo(id: 'converge-bucharest', title: 'Converge on Bucharest — 4 aircraft'),
+    ScenarioInfo(id: 'carpathian-siege', title: 'Carpathian siege — triangle flights'),
+    ScenarioInfo(id: 'storm-wall', title: 'Storm wall'),
+    ScenarioInfo(id: 'over-the-top', title: 'Over the top'),
+    ScenarioInfo(id: 'low-corridor', title: 'Low corridor'),
+    ScenarioInfo(id: 'slalom', title: 'Slalom'),
+    ScenarioInfo(id: 'fuel-critical', title: 'Fuel critical'),
+    ScenarioInfo(id: 'in-flight-replan', title: 'In-flight replan'),
+    ScenarioInfo(id: 'real-meteo', title: 'Real meteo (AIFS)'),
+  ];
+
   final _bridge = AirspaceBridgeService();
   late final AirspaceWebviewHost _host;
   StreamSubscription<AirspaceEvent>? _subscription;
   Timer? _watchdog;
+  Timer? _scenarioConfirmTimer;
 
-  List<ScenarioInfo> _scenarios = [];
-  String _selectedScenario = '';
+  List<ScenarioInfo> _scenarios = _knownScenarios;
+  String _selectedScenario = _knownScenarios.first.id;
   String _statusText = 'Initializing…';
   ScenarioLoadedPayload? _payload;
   FlightState? _flightState;
@@ -42,7 +60,6 @@ class _AirspacePageState extends State<AirspacePage> {
     _host = AirspaceWebviewHost(_bridge);
     _subscription = _bridge.events.listen(_onEvent);
 
-    // Watchdog: if the scene never connects, show WHY instead of spinning.
     _watchdog = Timer(const Duration(seconds: 20), () {
       if (!mounted || _sceneReady) return;
       setState(() {
@@ -50,7 +67,7 @@ class _AirspacePageState extends State<AirspacePage> {
             ? 'Scene connected but no scenario loaded.\n'
               'Is the backend running on port 8000?'
             : 'Scene did not respond at:\n${widget.sceneUrl}\n\n'
-              'Is `npm run preview` running in assets/flight-map-3d?';
+              'Is the Vite dev server running in assets/flight-map-3d?';
       });
     });
   }
@@ -58,9 +75,9 @@ class _AirspacePageState extends State<AirspacePage> {
   void _onEvent(AirspaceEvent event) {
     switch (event) {
       case AirspaceReady():
+        debugPrint('[bridge] ready — ${event.scenarios.length} scenarios from scene');
         setState(() {
-          _scenarios = event.scenarios;
-          if (_scenarios.isNotEmpty) _selectedScenario = _scenarios.first.id;
+          if (event.scenarios.isNotEmpty) _scenarios = event.scenarios;
           _sceneConnected = true;
           _statusText = 'Scene connected — loading scenario…';
         });
@@ -71,6 +88,8 @@ class _AirspacePageState extends State<AirspacePage> {
         });
       case AirspaceScenarioLoaded():
         _watchdog?.cancel();
+        _scenarioConfirmTimer?.cancel();
+        debugPrint('[bridge] scenario loaded: ${event.payload.scenario}');
         setState(() {
           _payload = event.payload;
           _selectedScenario = event.payload.scenario;
@@ -81,7 +100,6 @@ class _AirspacePageState extends State<AirspacePage> {
       case AirspaceFlightStateEvent():
         setState(() => _flightState = event.state);
       case AirspaceFlightSelected():
-        // A plane was clicked in the 3D scene — sync the chip highlight.
         setState(() => _selectedFlight = event.index);
       case AirspaceRoutePointEvent():
         _showRoutePoint(event.info);
@@ -90,8 +108,30 @@ class _AirspacePageState extends State<AirspacePage> {
       case AirspaceWeatherUpdated():
         setState(() => _statusText = event.trajectoryStatus);
       case AirspaceErrorEvent():
+        debugPrint('[bridge] error: ${event.message}');
         setState(() => _statusText = 'Error: ${event.message}');
     }
+  }
+
+  void _selectScenario(String id) {
+    debugPrint('[bridge] -> select scenario $id');
+    setState(() {
+      _selectedScenario = id;
+      _statusText = 'Loading $id…';
+    });
+    _host.loadScenario(id);
+
+    // Failsafe: if the scene does not confirm the new scenario within 4 s
+    // (command lost, bridge glitch), reload the iframe with ?scenario=<id>
+    // — the scene reads that at boot, so this path always works.
+    _scenarioConfirmTimer?.cancel();
+    _scenarioConfirmTimer = Timer(const Duration(seconds: 4), () {
+      if (!mounted) return;
+      if (_selectedScenario == id && _payload?.scenario != id) {
+        debugPrint('[bridge] no confirm for $id — reloading scene with URL param');
+        _host.reloadWithScenario(id);
+      }
+    });
   }
 
   void _showRoutePoint(RoutePointInfo info) {
@@ -106,6 +146,7 @@ class _AirspacePageState extends State<AirspacePage> {
   @override
   void dispose() {
     _watchdog?.cancel();
+    _scenarioConfirmTimer?.cancel();
     _subscription?.cancel();
     _bridge.dispose();
     super.dispose();
@@ -175,7 +216,6 @@ class _AirspacePageState extends State<AirspacePage> {
                 ),
               ),
 
-            // Top bar: status + scenario selector.
             Positioned(
               top: 10,
               left: 10,
@@ -225,14 +265,13 @@ class _AirspacePageState extends State<AirspacePage> {
                     child: ScenarioSelector(
                       scenarios: _scenarios,
                       selected: _selectedScenario,
-                      onSelected: (id) => _host.loadScenario(id),
+                      onSelected: _selectScenario,
                     ),
                   ),
                 ],
               ),
             ),
 
-            // Right: metrics + legend.
             Positioned(
               top: isPhone ? 210 : 96,
               right: 10,
