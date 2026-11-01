@@ -12,7 +12,7 @@ class AirTitle extends StatelessWidget {
         Container(
           padding: const EdgeInsets.all(8),
           decoration: BoxDecoration(
-            color: const Color.fromARGB(255, 165, 47, 139),
+            color: Colors.black,
             borderRadius: BorderRadius.circular(10),
             boxShadow: [
               BoxShadow(
@@ -22,19 +22,17 @@ class AirTitle extends StatelessWidget {
               ),
             ],
           ),
-          child: Transform.rotate(
-            angle: 0.9,
-            child: const Icon(
-              Icons.send_rounded,
-              color: Color(0xFFFFE306),
-              size: 22,
-            ),
+          child: Image.asset(
+            'assets/pictures/image.png',
+            width: 22,
+            height: 22,
+            fit: BoxFit.contain,
           ),
         ),
 
         const SizedBox(width: 10),
 
-                Column(
+        Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -50,7 +48,8 @@ class AirTitle extends StatelessWidget {
               margin: const EdgeInsets.only(top: 2),
               width: 100,
               height: 2,
-              color: const Color.fromARGB(255, 21, 83, 153).withValues(alpha: 0.6),
+              color: const Color.fromARGB(255, 21, 83, 153)
+                  .withValues(alpha: 0.6),
             ),
           ],
         ),
