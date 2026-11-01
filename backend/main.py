@@ -35,7 +35,6 @@ from optimizer.astar import (
     assess_route_weather_change,
     estimate_route_position,
     extend_with_flight_phases,
-    find_avoided_high_exposure_cells,
     find_path,
     normalize_mode,
 )
@@ -44,8 +43,9 @@ from synthetic_scenarios import (
     AIRPORTS,
     MULTI_FLIGHT_SCENARIOS,
     SCENARIO_TITLES,
+    SYNTHETIC_CONFIG,
     build_multi_flight_routes,
-    build_synthetic_events,
+    build_quick_events,
     build_synthetic_grid,
     build_synthetic_routes,
     spawn_route_blockage,
@@ -65,13 +65,15 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 
+# PERFORMANCE: 0.5° default grid. Halves live-fetch points (~4x fewer A*
+# nodes) with no visible loss — AIFS itself is 0.25° and clouds are huge.
 DEFAULT_CONFIG = {
     "min_lat": 43.5,
     "max_lat": 48.5,
     "min_lon": 19.5,
     "max_lon": 30.0,
-    "lat_step": 0.25,
-    "lon_step": 0.25,
+    "lat_step": 0.5,
+    "lon_step": 0.5,
 }
 
 ROMANIA_MAP_GEO_BOUNDS = {
@@ -86,9 +88,30 @@ ROUTE = {
     "destination": {"name": "LRCL", "city": "Cluj-Napoca", "lat": 46.783389, "lon": 23.684194},
 }
 
-_FETCH_CHUNK_SIZE = 100
+# PERFORMANCE: fewer, larger Open-Meteo requests (POST JSON body — no URL
+# limit). ~200 grid points now fit in a single fetch.
+_FETCH_CHUNK_SIZE = 250
 
 SCENE_CACHE_VERSION = "full-aifs-scene-v3"
+
+# ---------------------------------------------------------------------------
+# In-memory scenario cache. Synthetic scenarios are deterministic given
+# (scenario, mode, seed, progress, aircraft) — recomputing A* for a repeat
+# visit is pure waste. Bounded, oldest-entry eviction.
+# ---------------------------------------------------------------------------
+_SCENARIO_CACHE = {}
+_SCENARIO_CACHE_MAX = 16
+
+
+def _cached_scenario(key, builder):
+    cached = _SCENARIO_CACHE.get(key)
+    if cached is not None:
+        return cached
+    payload = builder()
+    if len(_SCENARIO_CACHE) >= _SCENARIO_CACHE_MAX:
+        _SCENARIO_CACHE.pop(next(iter(_SCENARIO_CACHE)))
+    _SCENARIO_CACHE[key] = payload
+    return payload
 
 
 class AircraftProfileRequest(BaseModel):
@@ -362,9 +385,9 @@ def _scene_routes(grid_results, mode, profile: AircraftProfile):
         },
         "reasoning": {
             "mode": canonical_mode,
-            "avoided_high_exposure_cells": find_avoided_high_exposure_cells(
-                grid_results, baseline_route, optimized_route
-            ),
+            # PERFORMANCE: frontend never renders these; computing them
+            # rebuilds the full node graph. Dropped.
+            "avoided_high_exposure_cells": [],
         },
     }
 
@@ -558,39 +581,45 @@ def test_scenario(
     aircraft: Optional[AircraftProfileRequest] = None,
 ):
     profile = AircraftProfile(**aircraft.model_dump()) if aircraft else AircraftProfile()
+    aircraft_key = tuple(sorted(aircraft.model_dump().items())) if aircraft else None
+    cache_key = (scenario, mode, round(route_progress, 3), weather_seed, aircraft_key)
 
     # --- Multi-flight scenarios: several aircraft across several airports ---
     if scenario in MULTI_FLIGHT_SCENARIOS:
         spec = MULTI_FLIGHT_SCENARIOS[scenario]
-        try:
-            grid = build_synthetic_grid(scenario, DEFAULT_CONFIG, weather_seed)
-            flights = build_multi_flight_routes(grid, spec["flights"], mode, profile)
-        except ValueError as error:
-            raise HTTPException(status_code=400, detail=str(error)) from error
-        return {
-            "meta": {
-                "source": "synthetic",
-                "scenario": scenario,
-                "scenario_title": spec["title"],
-                "fetched_at": datetime.now(timezone.utc).isoformat(),
-                "origin_lat": GRID_ORIGIN_LAT,
-                "origin_lon": GRID_ORIGIN_LON,
-                "scene_unit": "km",
-                "vertical_exaggeration": VERTICAL_EXAGGERATION,
-                "map_bounds": _scene_map_bounds(),
-                "romania_border": _scene_romania_border(),
-                "grid_config": DEFAULT_CONFIG,
-                "routing_assumptions": _routing_assumptions(profile),
-                "trajectory_status": f"A* multi-flight scenario ({len(flights)} aircraft)",
-            },
-            "grid": grid,
-            "events": build_synthetic_events(grid),
-            "airports": _airports_for_flight_pairs(spec["flights"]),
-            "flights": flights,
-            # Legacy compat: single-flight consumers (HUD, metrics panel)
-            # read payload.routes — expose the first flight under that key.
-            "routes": flights[0],
-        }
+
+        def build_multi():
+            try:
+                grid = build_synthetic_grid(scenario, SYNTHETIC_CONFIG, weather_seed)
+                flights = build_multi_flight_routes(grid, spec["flights"], mode, profile)
+            except ValueError as error:
+                raise HTTPException(status_code=400, detail=str(error)) from error
+            return {
+                "meta": {
+                    "source": "synthetic",
+                    "scenario": scenario,
+                    "scenario_title": spec["title"],
+                    "fetched_at": datetime.now(timezone.utc).isoformat(),
+                    "origin_lat": GRID_ORIGIN_LAT,
+                    "origin_lon": GRID_ORIGIN_LON,
+                    "scene_unit": "km",
+                    "vertical_exaggeration": VERTICAL_EXAGGERATION,
+                    "map_bounds": _scene_map_bounds(),
+                    "romania_border": _scene_romania_border(),
+                    "grid_config": SYNTHETIC_CONFIG,
+                    "routing_assumptions": _routing_assumptions(profile),
+                    "trajectory_status": f"A* multi-flight scenario ({len(flights)} aircraft)",
+                },
+                "grid": grid,
+                "events": build_quick_events(grid),
+                "airports": _airports_for_flight_pairs(spec["flights"]),
+                "flights": flights,
+                # Legacy compat: single-flight consumers (HUD, metrics panel)
+                # read payload.routes — expose the first flight under that key.
+                "routes": flights[0],
+            }
+
+        return _cached_scenario(cache_key, build_multi)
 
     if scenario == "real-meteo":
         grid_request = GridRequest(test_mode=False, mode=mode)
@@ -605,60 +634,65 @@ def test_scenario(
     if scenario == "in-flight-replan":
         if not 0 <= route_progress <= 1:
             raise HTTPException(status_code=400, detail="route_progress must be between 0 and 1")
-        try:
-            previous_grid = build_synthetic_grid("clear-airspace", DEFAULT_CONFIG)
-            previous_routes = build_synthetic_routes(previous_grid, ROUTE, mode, profile)
-            updated_grid = spawn_route_blockage(
+
+        def build_replan():
+            try:
+                previous_grid = build_synthetic_grid("clear-airspace", SYNTHETIC_CONFIG)
+                previous_routes = build_synthetic_routes(previous_grid, ROUTE, mode, profile)
+                updated_grid = spawn_route_blockage(
+                    previous_grid,
+                    previous_routes["optimized"],
+                    route_progress,
+                    weather_seed,
+                )
+            except ValueError as error:
+                raise HTTPException(status_code=400, detail=str(error)) from error
+            return _weather_replan_payload(
                 previous_grid,
                 previous_routes["optimized"],
                 route_progress,
+                mode,
+                updated_grid,
+                "synthetic",
+                scenario,
                 weather_seed,
+                profile,
             )
-        except ValueError as error:
-            raise HTTPException(status_code=400, detail=str(error)) from error
-        return _weather_replan_payload(
-            previous_grid,
-            previous_routes["optimized"],
-            route_progress,
-            mode,
-            updated_grid,
-            "synthetic",
-            scenario,
-            weather_seed,
-            profile,
-        )
+
+        return _cached_scenario(cache_key, build_replan)
 
     if scenario not in SCENARIO_TITLES or scenario == "clear-airspace":
         raise HTTPException(status_code=404, detail=f"Unknown scenario: {scenario}")
 
-    try:
-        grid = build_synthetic_grid(scenario, DEFAULT_CONFIG, weather_seed)
-        routes = build_synthetic_routes(grid, ROUTE, mode, profile)
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error))
+    def build_legacy():
+        try:
+            grid = build_synthetic_grid(scenario, SYNTHETIC_CONFIG, weather_seed)
+            routes = build_synthetic_routes(grid, ROUTE, mode, profile)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+        return {
+            "meta": {
+                "source": "synthetic",
+                "scenario": scenario,
+                "scenario_title": SCENARIO_TITLES[scenario],
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "origin_lat": GRID_ORIGIN_LAT,
+                "origin_lon": GRID_ORIGIN_LON,
+                "scene_unit": "km",
+                "vertical_exaggeration": VERTICAL_EXAGGERATION,
+                "map_bounds": _scene_map_bounds(),
+                "romania_border": _scene_romania_border(),
+                "grid_config": SYNTHETIC_CONFIG,
+                "routing_assumptions": _routing_assumptions(profile),
+                "trajectory_status": f"Synthetic A* route ({routes['reasoning']['mode']})",
+            },
+            "grid": grid,
+            "events": build_quick_events(grid),
+            "airports": _scene_airports(),
+            "routes": routes,
+        }
 
-    events = build_synthetic_events(grid)
-    return {
-        "meta": {
-            "source": "synthetic",
-            "scenario": scenario,
-            "scenario_title": SCENARIO_TITLES[scenario],
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "origin_lat": GRID_ORIGIN_LAT,
-            "origin_lon": GRID_ORIGIN_LON,
-            "scene_unit": "km",
-            "vertical_exaggeration": VERTICAL_EXAGGERATION,
-            "map_bounds": _scene_map_bounds(),
-            "romania_border": _scene_romania_border(),
-            "grid_config": DEFAULT_CONFIG,
-            "routing_assumptions": _routing_assumptions(profile),
-            "trajectory_status": f"Synthetic A* route ({routes['reasoning']['mode']})",
-        },
-        "grid": grid,
-        "events": events,
-        "airports": _scene_airports(),
-        "routes": routes,
-    }
+    return _cached_scenario(cache_key, build_legacy)
 
 
 def _weather_replan_payload(
@@ -722,9 +756,7 @@ def _weather_replan_payload(
         "reasoning": {
             "mode": canonical_mode,
             "weather_change": weather_change,
-            "avoided_high_exposure_cells": find_avoided_high_exposure_cells(
-                updated_grid, baseline_route, optimized_route
-            ),
+            "avoided_high_exposure_cells": [],
         },
     }
     valid_times = _forecast_metadata(updated_grid)
@@ -746,7 +778,7 @@ def _weather_replan_payload(
             "trajectory_status": trajectory_status,
         },
         "grid": updated_grid,
-        "events": build_synthetic_events(updated_grid)
+        "events": build_quick_events(updated_grid)
         if source == "synthetic"
         else _events_for_grid(updated_grid),
         "airports": _scene_airports(),

@@ -1,11 +1,13 @@
 import * as THREE from 'three';
 
 /**
- * Executive scene atmosphere: deep-navy gradient sky, gentle depth fog and
- * soft fill lighting. Purely additive — replaces no existing lights.
+ * Executive scene atmosphere: deep-navy gradient sky and gentle depth fog.
+ *
+ * PERFORMANCE: the old version added a hemisphere + directional light on
+ * top of lights.js — redundant, and every light is per-fragment cost on
+ * every cloud. Lighting lives entirely in lights.js now.
  */
 export function applyExecutiveEnvironment(scene) {
-    // Vertical gradient background (screen-space feel via large canvas).
     const canvas = document.createElement('canvas');
     canvas.width = 2;
     canvas.height = 512;
@@ -21,13 +23,4 @@ export function applyExecutiveEnvironment(scene) {
 
     // Depth fog tuned to the corridor scale (~600 km span, camera ~500 out).
     scene.fog = new THREE.Fog(0x0a1120, 1100, 3200);
-
-    // Soft sky/ground bounce the original rig may not include.
-    const hemi = new THREE.HemisphereLight(0x8fb7d9, 0x141c28, 0.38);
-    scene.add(hemi);
-
-    // Cool rim fill from the west so terrain reads with dimension.
-    const fill = new THREE.DirectionalLight(0xcfe4ff, 0.28);
-    fill.position.set(-400, 500, -250);
-    scene.add(fill);
 }

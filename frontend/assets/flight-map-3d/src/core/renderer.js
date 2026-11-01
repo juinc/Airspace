@@ -1,20 +1,15 @@
 import * as THREE from 'three';
-import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
-import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 
 /**
- * Creates the WebGL renderer plus a bloom post-processing chain:
- * scene -> bloom (glowing routes, beacons, storm cores) -> tone-mapped output.
+ * PERFORMANCE renderer: no post-processing chain at all.
  *
- * PERFORMANCE notes:
- * - Pixel ratio capped at 1.5 — DPR 2 renders 4x the pixels of DPR 1 for
- *   almost no visible benefit on a dark, moving scene.
- * - Bloom runs at half resolution (UnrealBloomPass downsamples internally,
- *   but we hand it a smaller viewport explicitly to cut its cost further).
- * - MSAA samples reduced 4 -> 2: lines are thin but the bloom pass smooths
- *   edges anyway, so the extra samples were pure cost.
+ * The old EffectComposer + UnrealBloomPass cost 5-6 fullscreen passes per
+ * frame on top of the main render. Route glow comes from the additive
+ * glow-tube meshes in flightCurve.js, so bloom was nearly invisible
+ * luxury. Direct render, native antialias, DPR capped at 1.25.
+ *
+ * Interface kept identical to the old composer-based renderer, so main.js
+ * does not change: { renderer, domElement, setSize(w, h), render() }.
  */
 export function createRenderer(container, scene, camera) {
     const renderer = new THREE.WebGLRenderer({
@@ -22,41 +17,17 @@ export function createRenderer(container, scene, camera) {
         alpha: false,
         powerPreference: 'high-performance',
     });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
     renderer.setSize(container.clientWidth || window.innerWidth, container.clientHeight || window.innerHeight);
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.VSMShadowMap;
+
+    // Shadows OFF: a 2048x VSM shadow map re-renders the whole scene a
+    // second time per frame. On a dark night scene it was invisible.
+    renderer.shadowMap.enabled = false;
+
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.15;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     container.appendChild(renderer.domElement);
-
-    const size = renderer.getDrawingBufferSize(new THREE.Vector2());
-
-    let composer;
-    try {
-        const target = new THREE.WebGLRenderTarget(size.x, size.y, {
-            type: THREE.HalfFloatType,
-            samples: 2,
-        });
-        composer = new EffectComposer(renderer, target);
-    } catch (error) {
-        console.warn('MSAA render target unavailable, using default composer.', error);
-        composer = new EffectComposer(renderer);
-    }
-
-    const renderPass = new RenderPass(scene, camera);
-    const bloomPass = new UnrealBloomPass(
-        new THREE.Vector2(size.x, size.y),
-        0.55,  // strength
-        0.5,   // radius
-        0.82,  // threshold — only bright emissive/additive elements bloom
-    );
-    const outputPass = new OutputPass();
-
-    composer.addPass(renderPass);
-    composer.addPass(bloomPass);
-    composer.addPass(outputPass);
 
     return {
         renderer,
@@ -64,13 +35,10 @@ export function createRenderer(container, scene, camera) {
 
         setSize(width, height) {
             renderer.setSize(width, height);
-            const drawingSize = renderer.getDrawingBufferSize(new THREE.Vector2());
-            composer.setSize(drawingSize.x, drawingSize.y);
-            bloomPass.setSize(drawingSize.x, drawingSize.y);
         },
 
-        render(delta) {
-            composer.render(delta);
+        render() {
+            renderer.render(scene, camera);
         },
     };
 }

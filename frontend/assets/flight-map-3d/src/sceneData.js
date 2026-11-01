@@ -13,11 +13,10 @@ const FLIGHT_COLORS = [0xffb347, 0x6fd3e8, 0xb48fe0, 0x7fd6a4, 0xe2836f, 0xf0a35
 const BASELINE_COLOR = 0x5f7f9b;
 const PREVIOUS_COLOR = 0x7a8ea0;
 
-// PERFORMANCE: hard cap on rendered cloud cells. The full-country grid can
-// produce 4500 candidate cells; rendering them all freezes the main thread
-// for seconds on every scenario load. 900 instances is visually dense and
-// builds in a fraction of the time.
-const MAX_WEATHER_CELLS = 900;
+// PERFORMANCE: hard cap on rendered cloud cells, kept sorted by severity so
+// the worst weather always renders. 500 low-poly instances builds in well
+// under one frame budget; the old 4500-instance build froze the tab.
+const MAX_WEATHER_CELLS = 500;
 
 const ENDPOINT_GROUND_OFFSET = 0.4;
 const LOW_ALT_TERRAIN_CLEARANCE = 0.8;

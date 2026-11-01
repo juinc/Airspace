@@ -39,10 +39,12 @@ export function instantiatePlane(template) {
     });
     plane.add(model);
 
+    /*
     // Engine glow so the aircraft always reads against dark clouds.
     const engineLight = new THREE.PointLight(0x9fd8ff, 2.2, 90, 1.6);
     engineLight.position.set(0, 2, 0);
     plane.add(engineLight);
+    */
 
     return plane;
 }

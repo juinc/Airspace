@@ -11,14 +11,27 @@ from optimizer.astar import (
     compute_route_metrics,
     estimate_route_position,
     extend_with_flight_phases,
-    find_avoided_high_exposure_cells,
     find_path,
     normalize_mode,
 )
 from optimizer.stub_trajectory import generate_baseline_route
 from weather.client import PRESSURE_LEVELS
-from weather.events import detect_events
 from weather.normalize import weather_exposure_score
+
+# ---------------------------------------------------------------------------
+# PERFORMANCE: 0.5° synthetic grid. Cuts A* nodes ~4x versus 0.25° — the
+# single biggest backend win. Weather walls are lat/lon-anchored, so the
+# scenarios read identically; clouds are large enough that the coarser
+# sampling is invisible.
+# ---------------------------------------------------------------------------
+SYNTHETIC_CONFIG = {
+    "min_lat": 43.5,
+    "max_lat": 48.5,
+    "min_lon": 19.5,
+    "max_lon": 30.0,
+    "lat_step": 0.5,
+    "lon_step": 0.5,
+}
 
 # ---------------------------------------------------------------------------
 # Airport registry — every scenario (legacy and multi-flight) draws from here.
@@ -127,8 +140,6 @@ def _multi_cell_plan(scenario, lat: float, lon: float):
     corridors = _corridors_for(scenario)
 
     if scenario == "crossroads-storm":
-        # A severe wall across each corridor with a gap on alternating sides,
-        # plus thunderstorm shoulders near the corridor centerlines.
         for i, (origin, dest) in enumerate(corridors):
             progress, lateral = _corridor_frame(origin, dest, lat, lon)
             if not (0.05 <= progress <= 0.95) or abs(lateral) > 1.6:
@@ -142,8 +153,6 @@ def _multi_cell_plan(scenario, lat: float, lon: float):
         return "clear", None
 
     if scenario == "converge-bucharest":
-        # A severe storm ring around Bucharest with two approach gaps
-        # (west/NW for Craiova+Timisoara, NNE for Iasi), light rain over the hub.
         hub = AIRPORTS["LRBS"]
         cos = math.cos(math.radians(hub["lat"]))
         dx = (lon - hub["lon"]) * cos
@@ -159,8 +168,6 @@ def _multi_cell_plan(scenario, lat: float, lon: float):
         return "clear", None
 
     if scenario == "carpathian-siege":
-        # One giant storm mass over the Carpathian bend; the Cluj->Bucharest
-        # corridor runs straight through it and must swing wide.
         center_lat, center_lon = 45.65, 25.10
         cos = math.cos(math.radians(center_lat))
         dist = math.hypot((lon - center_lon) * cos, lat - center_lat)
@@ -284,7 +291,9 @@ def spawn_route_blockage(previous_grid, previous_route, route_progress, weather_
 
     target_progress = min(0.97, route_progress + 0.25 + rng.uniform(0, 0.10))
     target = estimate_route_position(previous_route, target_progress)
-    radius_deg = 0.45
+    # 0.8° radius: covers enough cells on the 0.5° grid to reliably
+    # trigger the "drastic" replan threshold.
+    radius_deg = 0.8
 
     for point in grid:
         if (abs(point["lat"] - target["lat"]) <= radius_deg
@@ -294,7 +303,37 @@ def spawn_route_blockage(previous_grid, previous_route, route_progress, weather_
     return grid
 
 
+def build_quick_events(grid):
+    """
+    PERFORMANCE: the frontend only displays the event COUNT (status line).
+    Full scipy cluster detection (15 passes over the grid) is pure waste
+    here — this counts storm cells directly in one pass.
+    """
+    severe = thunder = rain = 0
+    for point in grid:
+        cape = point.get("cape") or 0
+        precipitation = point.get("precipitation") or 0
+        if cape >= 2500:
+            severe += 1
+        elif cape >= 1000:
+            thunder += 1
+        elif precipitation >= 1:
+            rain += 1
+
+    events = []
+    if severe:
+        events.append({"type": "severe_storm", "cell_count": severe})
+    if thunder:
+        events.append({"type": "thunderstorm", "cell_count": thunder})
+    if rain:
+        events.append({"type": "rain", "cell_count": rain})
+    return events
+
+
 def build_synthetic_events(grid, pressure_levels=PRESSURE_LEVELS):
+    """Full scipy-based event detection — kept for API compatibility."""
+    from weather.events import detect_events
+
     if not grid:
         return []
     lat_values = sorted({point["lat"] for point in grid})
@@ -344,9 +383,9 @@ def build_synthetic_routes(grid, route, mode="Balanced", profile=None):
         },
         "reasoning": {
             "mode": canonical_mode,
-            "avoided_high_exposure_cells": find_avoided_high_exposure_cells(
-                grid, baseline, optimized
-            ),
+            # PERFORMANCE: the frontend never renders avoided cells, and
+            # computing them rebuilds the entire node graph per flight.
+            "avoided_high_exposure_cells": [],
         },
     }
 

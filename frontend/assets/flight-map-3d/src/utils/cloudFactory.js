@@ -5,19 +5,22 @@ let cachedKitPromise = null;
 
 /**
  * Procedural weather kit. Returns:
- * { low: [], moderate: [part x3], elevated: [part x3], high: [part x3] }
+ * { low: [], moderate: [part x2], elevated: [part x2], high: [part x2] }
+ *
+ * PERFORMANCE: puffs are 10x7-segment spheres (was 16x12), 3-4 satellites
+ * (was 5-6), 8-11 rain streaks (was 14-19), and 2 variants per category
+ * (was 3). ~4x fewer vertices per instance — with 500 instances that is
+ * the difference between a smooth load and a multi-second freeze.
  *
  * Realism strategy — color is split into two cooperating layers:
  *
  * 1. GEOMETRY vertex colors (baked here): volumetric shading. Bright tops
  *    fading to blue-gray undersides, with dark tapered rain streaks hanging
- *    below the base for rain-bearing categories. This makes each puff read
- *    as a lit, three-dimensional cloud rather than a flat blob.
+ *    below the base for rain-bearing categories.
  *
  * 2. INSTANCE colors (set in weatherSpanMarkers.js): the weather itself.
  *    A per-cell darkness value derived from the exposure category and
- *    blurred across neighboring cells, so white cloud decks gradually
- *    darken into rain cells the way real cloud fields do — no hard edges.
+ *    blurred across neighboring cells.
  *
  * Seamlessness: every puff is clamped onto a shared flat base plane and the
  * variants include wide low "filler" puffs, so overlapping cell instances
@@ -34,17 +37,14 @@ async function buildProceduralKit() {
         low: [],
         moderate: [
             makeCloudPart({ seed: 101, topColor: 0xf7fafd, bottomColor: 0x9fb3c9, opacity: 0.97 }),
-            makeCloudPart({ seed: 117, topColor: 0xf7fafd, bottomColor: 0x9fb3c9, opacity: 0.97 }),
             makeCloudPart({ seed: 133, topColor: 0xf2f7fc, bottomColor: 0x9fb3c9, opacity: 0.97 }),
         ],
         elevated: [
             makeCloudPart({ seed: 202, topColor: 0xdfe8f1, bottomColor: 0x71859d, opacity: 0.98, rain: true }),
-            makeCloudPart({ seed: 218, topColor: 0xdfe8f1, bottomColor: 0x71859d, opacity: 0.98, rain: true }),
             makeCloudPart({ seed: 234, topColor: 0xd8e2ec, bottomColor: 0x71859d, opacity: 0.98, rain: true }),
         ],
         high: [
             makeCloudPart({ seed: 303, topColor: 0xbfcdda, bottomColor: 0x556176, opacity: 0.985, rain: true, lightning: true }),
-            makeCloudPart({ seed: 319, topColor: 0xbfcdda, bottomColor: 0x556176, opacity: 0.985, rain: true, lightning: true }),
             makeCloudPart({ seed: 335, topColor: 0xb6c3d3, bottomColor: 0x556176, opacity: 0.985, rain: true, lightning: true }),
         ],
     };
@@ -61,7 +61,7 @@ function makeCloudPart(config) {
     geometries.push(makePuff(rng, 0.24 + rng() * 0.05, 0, 0.05 + rng() * 0.04, 0));
 
     // Satellite domes around the center — the cauliflower silhouette.
-    const satellites = 5 + Math.floor(rng() * 2);
+    const satellites = 3 + Math.floor(rng() * 2);
     for (let i = 0; i < satellites; i++) {
         const angle = (i / satellites) * Math.PI * 2 + rng() * 0.9;
         const dist = 0.13 + rng() * 0.21;
@@ -74,9 +74,8 @@ function makeCloudPart(config) {
         ));
     }
 
-    // Wide, flat fillers hugging the base plane. These are what guarantee
-    // that neighbouring cell instances overlap edge-to-edge and fuse into
-    // ONE continuous cloud body instead of a row of separate balls.
+    // Wide, flat fillers hugging the base plane — guarantee that
+    // neighbouring cell instances overlap edge-to-edge and fuse.
     for (let i = 0; i < 2; i++) {
         const angle = rng() * Math.PI * 2;
         const dist = 0.30 + rng() * 0.12;
@@ -91,10 +90,10 @@ function makeCloudPart(config) {
 
     // Tapered rain streaks hanging below the cloud base.
     if (config.rain) {
-        const streakCount = 14 + Math.floor(rng() * 6);
+        const streakCount = 8 + Math.floor(rng() * 4);
         for (let i = 0; i < streakCount; i++) {
             const height = 0.16 + rng() * 0.10;
-            const streak = new THREE.CylinderGeometry(0.005, 0.012, height, 4, 1);
+            const streak = new THREE.CylinderGeometry(0.005, 0.012, height, 3, 1);
             const angle = rng() * Math.PI * 2;
             const dist = 0.05 + rng() * 0.32;
             streak.translate(
@@ -129,7 +128,7 @@ function makeCloudPart(config) {
     if (config.lightning) {
         // Soft additive core — the charged heart of a storm cell. Flickers
         // with random lightning flashes (driven in weatherSpanMarkers.js).
-        const glow = new THREE.SphereGeometry(0.3, 12, 12);
+        const glow = new THREE.SphereGeometry(0.3, 10, 8);
         const glowMat = new THREE.MeshBasicMaterial({
             color: 0x9fd8ff,
             transparent: true,
@@ -151,7 +150,7 @@ function makeCloudPart(config) {
  * (sphere seams) displace identically — the surface stays seamless.
  */
 function makePuff(rng, radius, x, y, z) {
-    const geo = new THREE.SphereGeometry(radius, 16, 12);
+    const geo = new THREE.SphereGeometry(radius, 10, 7);
     const pos = geo.attributes.position;
     const v = new THREE.Vector3();
 
