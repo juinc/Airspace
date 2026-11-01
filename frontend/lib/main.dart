@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'three_view.dart';
 import 'package:frontend/utils/overlay_3js.dart';
 
 void main() {
@@ -9,19 +8,19 @@ void main() {
   ));
 }
 
-class ThreeJSView extends StatelessWidget {
+class ThreeJSView extends StatefulWidget {
   const ThreeJSView({super.key});
 
   @override
+  State<ThreeJSView> createState() => _ThreeJSViewState();
+}
+
+class _ThreeJSViewState extends State<ThreeJSView> {
+  @override
   Widget build(BuildContext context) {
     return const Scaffold(
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          ThreeView(),
-          Overlay3js(),
-        ],
-      ),
+      backgroundColor: Color(0xFF101216),
+      body: Overlay3js(),
     );
   }
 }

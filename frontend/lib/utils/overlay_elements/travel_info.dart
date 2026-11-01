@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
 
 class TravelInfo extends StatefulWidget {
-  /// Pass real data from the backend here later, e.g.:
-  /// TravelInfo(fields: backendData)
   final List<Map<String, String>>? fields;
 
   const TravelInfo({super.key, this.fields});
@@ -33,7 +31,6 @@ class _TravelInfoState extends State<TravelInfo> {
 
   @override
   Widget build(BuildContext context) {
-    // Must be a direct child of the Stack in overlay_3js.dart
     return Positioned(
       top: 24,
       right: 24,
@@ -71,7 +68,7 @@ class _TravelInfoState extends State<TravelInfo> {
               ],
             ),
             const SizedBox(height: 10),
-            // Scrollable area — capped so it never grows off-screen
+            // scrollable, capped
             ConstrainedBox(
               constraints: const BoxConstraints(maxHeight: 260),
               child: SingleChildScrollView(
