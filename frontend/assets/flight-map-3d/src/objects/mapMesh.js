@@ -26,6 +26,87 @@ function groundGlowTexture() {
     return texture;
 }
 
+/**
+ * AGGRESSIVE: terrain height sampler built from raw vertex positions.
+ *
+ * The old version raycast the FULL mesh per waypoint (166k triangles x
+ * ~150 waypoints = a multi-second main-thread freeze on weak phones).
+ * This walks the position buffers ONCE (~10 ms), buckets the max world-y
+ * per grid cell, and answers ground-height lookups in O(1). No raycasts.
+ */
+export function createTerrainHeightSampler(root, resolution = 96) {
+    if (!root) return null;
+
+    root.updateWorldMatrix(true, true);
+    const bounds = new THREE.Box3().setFromObject(root);
+    const size = bounds.getSize(new THREE.Vector3());
+    if (!(size.x > 0) || !(size.z > 0)) return null;
+
+    const cellX = size.x / resolution;
+    const cellZ = size.z / resolution;
+    const heights = new Float32Array(resolution * resolution);
+    const filled = new Uint8Array(resolution * resolution);
+    const v = new THREE.Vector3();
+
+    root.traverse(object => {
+        if (!object.isMesh || !object.geometry) return;
+        const position = object.geometry.attributes.position;
+        if (!position) return;
+        const matrix = object.matrixWorld;
+        // Negative scale (the north-south flip) is irrelevant here: we only
+        // take the max world-y per cell.
+        for (let i = 0; i < position.count; i++) {
+            v.fromBufferAttribute(position, i).applyMatrix4(matrix);
+            const cx = Math.floor((v.x - bounds.min.x) / cellX);
+            const cz = Math.floor((v.z - bounds.min.z) / cellZ);
+            if (cx < 0 || cz < 0 || cx >= resolution || cz >= resolution) continue;
+            const index = cz * resolution + cx;
+            if (!filled[index] || v.y > heights[index]) {
+                filled[index] = 1;
+                heights[index] = v.y;
+            }
+        }
+    });
+
+    // Fill empty cells from the tallest filled neighbour so lookups never
+    // miss (coastal/edge cells of the terrain have no vertices nearby).
+    const neighbors = [-1, 0, 1];
+    for (let pass = 0; pass < 2; pass++) {
+        for (let cz = 0; cz < resolution; cz++) {
+            for (let cx = 0; cx < resolution; cx++) {
+                const index = cz * resolution + cx;
+                if (filled[index]) continue;
+                let best = 0;
+                let found = false;
+                for (const dz of neighbors) {
+                    for (const dx of neighbors) {
+                        const nx = cx + dx;
+                        const nz = cz + dz;
+                        if (nx < 0 || nz < 0 || nx >= resolution || nz >= resolution) continue;
+                        const nIndex = nz * resolution + nx;
+                        if (filled[nIndex] && heights[nIndex] > best) {
+                            best = heights[nIndex];
+                            found = true;
+                        }
+                    }
+                }
+                if (found) {
+                    filled[index] = 1;
+                    heights[index] = best;
+                }
+            }
+        }
+    }
+
+    return (x, z) => {
+        const cx = Math.floor((x - bounds.min.x) / cellX);
+        const cz = Math.floor((z - bounds.min.z) / cellZ);
+        if (cx < 0 || cz < 0 || cx >= resolution || cz >= resolution) return null;
+        const index = cz * resolution + cx;
+        return filled[index] ? heights[index] : null;
+    };
+}
+
 export function createMapMesh(model, grid, mapBounds) {
     const sceneBounds = getMapBounds(grid, mapBounds);
     const modelBounds = new THREE.Box3().setFromObject(model);
@@ -57,8 +138,8 @@ export function createMapMesh(model, grid, mapBounds) {
 
     model.traverse(object => {
         if (object.isMesh) {
-            object.castShadow = true;
-            object.receiveShadow = true;
+            object.castShadow = false; // shadows are disabled renderer-wide
+            object.receiveShadow = false;
             if (mapModelConfig.flipNorthSouth) {
                 const materials = Array.isArray(object.material) ? object.material : [object.material];
                 materials.forEach(material => { material.side = THREE.DoubleSide; });

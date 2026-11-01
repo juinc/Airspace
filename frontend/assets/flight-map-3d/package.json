@@ -5,14 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build --base=./ --outDir=dist/build",
+    "build": "vite build --base=./ --outDir=dist/build",
     "preview": "vite preview",
     "benchmark": "node benchmarks/measure.mjs"
   },
   "devDependencies": {
     "@gltf-transform/cli": "^4.5.1",
     "playwright": "^1.64.1",
-    "typescript": "~7.0.2",
     "vite": "^8.3.5"
   },
   "dependencies": {

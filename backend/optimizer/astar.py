@@ -228,6 +228,60 @@ def _pressure_levels(grid_points):
 
     return sorted(levels, key=lambda level: (median_altitude(level), level))
 
+def _precompute_avoid_index(routes, cell_size_km=20.0):
+    """Spatial bucket grid over reserved route segments.
+
+    AGGRESSIVE: the old check compared EVERY A* edge against EVERY segment of
+    EVERY reserved route in pure Python — tens of seconds for a 3-flight
+    scenario (the 'stuck on loading' cause). This buckets segments by 2D
+    cell once, so each edge only tests the handful of nearby segments.
+    Waypoint tuples are (x, altitude_km, z).
+    """
+    cells = {}
+    for route in routes:
+        for start, end in _route_segments(route):
+            min_x, max_x = min(start[0], end[0]), max(start[0], end[0])
+            min_z, max_z = min(start[2], end[2]), max(start[2], end[2])
+            min_a, max_a = min(start[1], end[1]), max(start[1], end[1])
+            segment = (start, end, min_x, max_x, min_z, max_z, min_a, max_a)
+            for cx in range(math.floor(min_x / cell_size_km), math.floor(max_x / cell_size_km) + 1):
+                for cz in range(math.floor(min_z / cell_size_km), math.floor(max_z / cell_size_km) + 1):
+                    cells.setdefault((cx, cz), []).append(segment)
+    return cells, cell_size_km
+
+
+def _edge_intersects_routes(current, neighbor, avoid_index):
+    """Edge vs reserved routes, using the precomputed bucket grid.
+
+    The per-segment 3D bbox overlap test is a valid prefilter (a bbox always
+    contains its segment), so the expensive exact distance only runs when the
+    edge is genuinely near a reserved route.
+    """
+    cells, cell_size = avoid_index
+    if not cells:
+        return False
+    start = (current.x, current.altitude_km, current.z)
+    end = (neighbor.x, neighbor.altitude_km, neighbor.z)
+    clearance_squared = ROUTE_INTERSECTION_CLEARANCE_KM ** 2
+
+    min_x, max_x = min(start[0], end[0]), max(start[0], end[0])
+    min_z, max_z = min(start[2], end[2]), max(start[2], end[2])
+    min_a, max_a = min(start[1], end[1]), max(start[1], end[1])
+
+    candidates = {}
+    for cx in range(math.floor(min_x / cell_size), math.floor(max_x / cell_size) + 1):
+        for cz in range(math.floor(min_z / cell_size), math.floor(max_z / cell_size) + 1):
+            for segment in cells.get((cx, cz), ()):
+                candidates[id(segment)] = segment
+
+    for segment in candidates.values():
+        seg_start, seg_end, sx0, sx1, sz0, sz1, sa0, sa1 = segment
+        if (max_x < sx0 or min_x > sx1 or max_z < sz0 or min_z > sz1
+                or max_a < sa0 or min_a > sa1):
+            continue  # bbox miss — skip the expensive exact test
+        if _segment_distance_squared(start, end, seg_start, seg_end) <= clearance_squared:
+            return True
+    return False
 
 @dataclass(frozen=True)
 class _Node:
@@ -400,14 +454,37 @@ def routes_intersect(first_route, second_route,
     )
 
 
-def _edge_intersects_routes(current, neighbor, routes):
+def _edge_intersects_routes(current, neighbor, avoid_index):
+    """Edge vs reserved routes, using the precomputed bucket grid.
+
+    The per-segment 3D bbox overlap test is a valid prefilter (a bbox always
+    contains its segment), so the expensive exact distance only runs when the
+    edge is genuinely near a reserved route.
+    """
+    cells, cell_size = avoid_index
+    if not cells:
+        return False
     start = (current.x, current.altitude_km, current.z)
     end = (neighbor.x, neighbor.altitude_km, neighbor.z)
     clearance_squared = ROUTE_INTERSECTION_CLEARANCE_KM ** 2
-    for route in routes:
-        for other_start, other_end in _route_segments(route):
-            if _segment_distance_squared(start, end, other_start, other_end) <= clearance_squared:
-                return True
+
+    min_x, max_x = min(start[0], end[0]), max(start[0], end[0])
+    min_z, max_z = min(start[2], end[2]), max(start[2], end[2])
+    min_a, max_a = min(start[1], end[1]), max(start[1], end[1])
+
+    candidates = {}
+    for cx in range(math.floor(min_x / cell_size), math.floor(max_x / cell_size) + 1):
+        for cz in range(math.floor(min_z / cell_size), math.floor(max_z / cell_size) + 1):
+            for segment in cells.get((cx, cz), ()):
+                candidates[id(segment)] = segment
+
+    for segment in candidates.values():
+        seg_start, seg_end, sx0, sx1, sz0, sz1, sa0, sa1 = segment
+        if (max_x < sx0 or min_x > sx1 or max_z < sz0 or min_z > sz1
+                or max_a < sa0 or min_a > sa1):
+            continue  # bbox miss — skip the expensive exact test
+        if _segment_distance_squared(start, end, seg_start, seg_end) <= clearance_squared:
+            return True
     return False
 
 
@@ -1003,6 +1080,7 @@ def find_path(grid_points, origin, destination, mode="Balanced",
     weather_weight = WEATHER_WEIGHTS[canonical_mode]
     profile = profile or AircraftProfile()
     avoid_routes = avoid_routes or ()
+    avoid_index = _precompute_avoid_index(avoid_routes) if avoid_routes else None
 
     nodes, pressure_levels, _, _ = _build_nodes(grid_points)
 
@@ -1051,7 +1129,7 @@ def find_path(grid_points, origin, destination, mode="Balanced",
         for neighbor in _neighbors(current_index, nodes):
             if neighbor.index in closed:
                 continue
-            if avoid_routes and _edge_intersects_routes(current, neighbor, avoid_routes):
+            if avoid_index and _edge_intersects_routes(current, neighbor, avoid_index):
                 continue
             current_cost = costs[current_index]
             edge_cost = calculate_edge_cost(

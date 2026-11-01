@@ -1,6 +1,10 @@
 const API_BASE_URL =
-    (typeof window !== 'undefined' && window.AIRSPACE_API_BASE) || 'http://localhost:8000';
-const REQUEST_TIMEOUT_MS = 8000;
+    (typeof window !== 'undefined' && window.AIRSPACE_API_BASE)
+    || new URLSearchParams(window.location.search).get('api')
+    || 'http://localhost:8000';
+// 20s: the first synthetic multi-flight request can legitimately take a few
+// seconds while A* runs; 8s aborted it and surfaced as "stuck on loading".
+const REQUEST_TIMEOUT_MS = 20000;
 
 async function fetchJson(url, options = {}) {
     const { signal: externalSignal, ...requestOptions } = options;

@@ -5,7 +5,7 @@ let cachedKitPromise = null;
 
 /**
  * Procedural weather kit. Returns:
- * { low: [], moderate: [part x2], elevated: [part x2], high: [part x2] }
+ * { low: [part x2], moderate: [part x2], elevated: [part x2], high: [part x2] }
  *
  * PERFORMANCE: puffs are 10x7-segment spheres (was 16x12), 3-4 satellites
  * (was 5-6), 8-11 rain streaks (was 14-19), and 2 variants per category
@@ -34,7 +34,10 @@ export function loadWeatherMeshKit() {
 
 async function buildProceduralKit() {
     return {
-        low: [],
+        low: [
+            makeCloudPart({ seed: 11, topColor: 0xfefeff, bottomColor: 0xbcc9d8, opacity: 0.88 }),
+            makeCloudPart({ seed: 23, topColor: 0xf9fcff, bottomColor: 0xbcc9d8, opacity: 0.88 }),
+        ],
         moderate: [
             makeCloudPart({ seed: 101, topColor: 0xf7fafd, bottomColor: 0x9fb3c9, opacity: 0.97 }),
             makeCloudPart({ seed: 133, topColor: 0xf2f7fc, bottomColor: 0x9fb3c9, opacity: 0.97 }),

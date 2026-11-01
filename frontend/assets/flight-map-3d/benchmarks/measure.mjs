@@ -1,128 +1,191 @@
-import { gzipSync } from 'node:zlib';
-import { chromium } from 'playwright';
+/**
+ * Airspace performance benchmark.
+ *
+ * Usage:
+ *   1. npm run build && npm run preview        (terminal 1 — serves dist/build)
+ *   2. python -m uvicorn main:app --port 8000  (terminal 2 — backend)
+ *   3. npm run benchmark                       (terminal 3)
+ *
+ * Measures, per device profile (desktop + Pixel 7 emulation):
+ *   - cold load:            navigation -> first `airspace:scenario-loaded`
+ *   - scenario switch:      dispatch -> matching `airspace:scenario-loaded`
+ *   - frame rate:           rAF sampling over 5 s after scene settle
+ *   - draw calls/triangles: renderer.info via ?benchmark=1 probe
+ *   - payload size:         decoded JSON bytes per scenario endpoint
+ *
+ * Results print to stdout as a markdown table and are saved to
+ * benchmarks/results.json for the before/after report.
+ */
+import { chromium, devices } from 'playwright';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
-const baseUrl = process.env.BASE_URL || 'http://127.0.0.1:5173';
-const switchCount = Math.max(1, Number(process.env.SWITCH_COUNT) || 3);
-const fpsDurationMs = Math.max(1000, Number(process.env.FPS_DURATION_MS) || 5000);
-const switchTimeoutMs = Math.max(1000, Number(process.env.SWITCH_TIMEOUT_MS) || 20000);
-const switchScenarios = (process.env.BENCHMARK_SCENARIOS || 'storm-wall,low-corridor,slalom')
-  .split(',')
-  .map(scenario => scenario.trim())
-  .filter(Boolean);
-const measurements = {
-  baseUrl,
-  startedAt: new Date().toISOString(),
-  coldLoadMs: null,
-  scenarioSwitchMs: [],
-  sustainedFps: null,
-  apiResponses: [],
-  browserErrors: [],
-};
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PREVIEW_URL = process.env.BENCH_URL || 'http://localhost:5173';
+const API_BASE = process.env.BENCH_API || 'http://localhost:8000';
 
-const browser = await chromium.launch({ headless: true });
+const SCENARIOS = [
+    'crossroads-storm',
+    'storm-wall',
+    'slalom',
+    'in-flight-replan',
+];
 
-try {
-  const context = await browser.newContext({
-    viewport: { width: 390, height: 844 },
-    deviceScaleFactor: 1,
-    isMobile: true,
-    hasTouch: true,
-  });
-  const page = await context.newPage();
-  const responseReadTasks = [];
-  page.on('pageerror', error => measurements.browserErrors.push(error.message));
-  page.on('requestfailed', request => {
-    if (/localhost:8000/.test(request.url())) {
-      measurements.browserErrors.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText || 'request failed'}`);
-    }
-  });
-  page.on('response', response => {
-    if (!/\/test-scenarios\//.test(response.url())) return;
+const PROFILES = [
+    { name: 'desktop', contextOptions: { viewport: { width: 1280, height: 800 } } },
+    { name: 'pixel-7', contextOptions: { ...devices['Pixel 7'] } },
+];
 
-    responseReadTasks.push((async () => {
-      try {
-        const body = await response.body();
-        const headers = await response.allHeaders();
-        const responseEnd = response.request().timing().responseEnd;
-        measurements.apiResponses.push({
-          url: response.url(),
-          status: response.status(),
-          responseMs: responseEnd >= 0 ? Math.round(responseEnd) : null,
-          payloadBytes: body.length,
-          gzipBytes: gzipSync(body).length,
-          wireBytes: Number(headers['content-length']) || null,
-          contentEncoding: headers['content-encoding'] || null,
-        });
-      } catch (error) {
-        measurements.browserErrors.push(`Could not read scenario response: ${error.message}`);
-      }
-    })());
-  });
+// Collects every bridge event the page emits into window.__benchEvents,
+// and exposes a dispatch helper that survives before the app boots.
+const INIT_SCRIPT = `
+    window.__benchEvents = [];
+    window.addEventListener('message', event => {
+        const data = event.data;
+        if (data && typeof data === 'object' && typeof data.type === 'string'
+            && data.type.startsWith('airspace:')) {
+            window.__benchEvents.push({ ...data, __t: performance.now() });
+        }
+    });
+`;
 
-  const coldStart = performance.now();
-  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => (
-    document.body.classList.contains('scene-ready')
-    && document.querySelector('#optimized-distance')?.textContent !== '—'
-  ), { timeout: 90000 });
-  measurements.coldLoadMs = Math.round(performance.now() - coldStart);
-  measurements.renderer = await page.evaluate(
-    () => window.__AIRSPACE_PERFORMANCE__?.() || null,
-  );
-
-  measurements.sustainedFps = await page.evaluate(durationMs => new Promise(resolve => {
-    let frames = 0;
-    const started = performance.now();
-    const sample = now => {
-      frames += 1;
-      if (now - started >= durationMs) {
-        resolve(Math.round(frames * 1000 / (now - started)));
-        return;
-      }
-      requestAnimationFrame(sample);
-    };
-    requestAnimationFrame(sample);
-  }), fpsDurationMs);
-
-  const selector = page.locator('#scenario-selector');
-  const scenarios = await selector.locator('option').evaluateAll(options =>
-    options.map(option => option.value).filter(Boolean),
-  );
-  const selectedScenarios = switchScenarios.slice(0, switchCount);
-  const unavailable = selectedScenarios.filter(scenario => !scenarios.includes(scenario));
-  if (unavailable.length > 0) {
-    throw new Error(`Unknown benchmark scenario(s): ${unavailable.join(', ')}`);
-  }
-
-  for (const scenario of selectedScenarios) {
-    const currentScenario = await selector.inputValue();
-    if (scenario === currentScenario) {
-      continue;
-    }
-
-    const started = performance.now();
-    const responsePromise = page.waitForResponse(
-      response => new URL(response.url()).pathname.endsWith(`/test-scenarios/${scenario}`),
-      { timeout: switchTimeoutMs },
+async function waitForEvent(page, type, match = () => true, timeoutMs = 30000) {
+    return page.waitForFunction(
+        ([eventType, isMatchSrc]) => {
+            const isMatch = eval('(' + isMatchSrc + ')');
+            return window.__benchEvents.some(e => e.type === eventType && isMatch(e));
+        },
+        [type, match.toString()],
+        { timeout: timeoutMs },
     );
-    await selector.selectOption(scenario);
-    try {
-      await responsePromise;
-    } catch (error) {
-      const failures = measurements.browserErrors.join('; ') || 'no API request error was captured';
-      throw new Error(`No response while switching to ${scenario}: ${failures}`, { cause: error });
-    }
-    await page.waitForFunction(() => {
-      const status = document.querySelector('#data-status')?.textContent || '';
-      return !status.startsWith('Loading ') && !status.startsWith('Checking ');
-    }, { timeout: 90000 });
-    measurements.scenarioSwitchMs.push(Math.round(performance.now() - started));
-  }
-
-  await Promise.all(responseReadTasks);
-  measurements.finishedAt = new Date().toISOString();
-  console.log(JSON.stringify(measurements, null, 2));
-  if (measurements.browserErrors.length > 0) process.exitCode = 1;
-} finally {
-  await browser.close();
 }
+
+async function dispatchScenario(page, scenario) {
+    await page.evaluate(id => window.airspaceBridge.dispatch({
+        type: 'airspace:loadScenario', scenario: id,
+    }), scenario);
+}
+
+async function measureFps(page, seconds = 5) {
+    return page.evaluate(async (durationMs) => {
+        return new Promise(resolve => {
+            let frames = 0;
+            const start = performance.now();
+            const tick = () => {
+                frames += 1;
+                if (performance.now() - start < durationMs) {
+                    requestAnimationFrame(tick);
+                } else {
+                    resolve(frames / ((performance.now() - start) / 1000));
+                }
+            };
+            requestAnimationFrame(tick);
+        });
+    }, seconds * 1000);
+}
+
+async function measurePayload(scenario) {
+    try {
+        const response = await fetch(`${API_BASE}/test-scenarios/${scenario}`);
+        if (!response.ok) return null;
+        const text = await response.text();
+        return { decoded_bytes: Buffer.byteLength(text) };
+    } catch {
+        return null;
+    }
+}
+
+async function runProfile(browser, profile) {
+    const context = await browser.newContext(profile.contextOptions);
+    await context.addInitScript(INIT_SCRIPT);
+    const page = await context.newPage();
+    const results = { profile: profile.name, scenarios: {} };
+
+    // --- Cold load (first paint of the default scenario) ---
+    const navStart = Date.now();
+    await page.goto(`${PREVIEW_URL}/?benchmark=1`, { waitUntil: 'domcontentloaded' });
+    await waitForEvent(page, 'airspace:scenario-loaded');
+    results.cold_load_ms = Math.round(Date.now() - navStart);
+
+    // --- Draw calls after the scene settles ---
+    await page.waitForTimeout(2500);
+    results.render_info = await page.evaluate(() =>
+        window.__AIRSPACE_PERFORMANCE ? window.__AIRSPACE_PERFORMANCE() : null);
+
+    // --- Frame rate ---
+    results.fps = Math.round(await measureFps(page, 5) * 10) / 10;
+
+    // --- Scenario switches ---
+    for (const scenario of SCENARIOS) {
+        const start = Date.now();
+        await dispatchScenario(page, scenario);
+        await waitForEvent(page, 'airspace:scenario-loaded',
+            e => e.scenario === scenario);
+        const elapsed = Math.round(Date.now() - start);
+        results.scenarios[scenario] = { switch_ms: elapsed };
+        await page.waitForTimeout(400);
+    }
+
+    // --- Payload sizes (device-independent, measured once per run) ---
+    if (profile === PROFILES[0]) {
+        for (const scenario of SCENARIOS) {
+            results.scenarios[scenario].payload = await measurePayload(scenario);
+        }
+    }
+
+    await context.close();
+    return results;
+}
+
+async function main() {
+    console.log(`Benchmarking ${PREVIEW_URL} against ${API_BASE} …\n`);
+    const browser = await chromium.launch();
+    const all = [];
+    for (const profile of PROFILES) {
+        process.stdout.write(`  profile: ${profile.name} … `);
+        all.push(await runProfile(browser, profile));
+        console.log('done');
+    }
+    await browser.close();
+
+    // --- Report ---
+    const rows = all.map(r => {
+        const info = r.render_info || {};
+        const switches = Object.entries(r.scenarios)
+            .map(([name, s]) => `${name}: ${s.switch_ms} ms`)
+            .join(', ');
+        return `| ${r.profile} | ${r.cold_load_ms} ms | ${r.fps} | ${info.calls ?? '—'} | ${info.triangles ?? '—'} | ${switches} |`;
+    });
+
+    console.log(`
+## Benchmark results
+
+| Profile | Cold load | FPS | Draw calls | Triangles | Scenario switches |
+|---|---:|---:|---:|---:|---|
+${rows.join('\n')}
+
+Payload sizes (decoded JSON — verify wire gzip with:
+  curl -sH 'Accept-Encoding: gzip' -o /dev/null -w '%{size_download}' \\
+    ${API_BASE}/test-scenarios/storm-wall
+):`);
+
+    for (const r of all) {
+        for (const [name, s] of Object.entries(r.scenarios)) {
+            if (s.payload) {
+                console.log(`  ${name}: ${(s.payload.decoded_bytes / 1024).toFixed(1)} KB decoded`);
+            }
+        }
+        break; // payload measured once, on the first profile
+    }
+
+    mkdirSync(__dirname, { recursive: true });
+    const outFile = join(__dirname, 'results.json');
+    writeFileSync(outFile, JSON.stringify(all, null, 2));
+    console.log(`\nSaved: ${outFile}`);
+}
+
+main().catch(error => {
+    console.error('Benchmark failed:', error);
+    process.exit(1);
+});

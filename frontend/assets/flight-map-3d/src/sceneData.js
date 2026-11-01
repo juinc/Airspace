@@ -13,40 +13,65 @@ const FLIGHT_COLORS = [0xffb347, 0x6fd3e8, 0xb48fe0, 0x7fd6a4, 0xe2836f, 0xf0a35
 const BASELINE_COLOR = 0x5f7f9b;
 const PREVIOUS_COLOR = 0x7a8ea0;
 
-// PERFORMANCE: hard cap on rendered cloud cells, kept sorted by severity so
-// the worst weather always renders. 500 low-poly instances builds in well
-// under one frame budget; the old 4500-instance build froze the tab.
-const MAX_WEATHER_CELLS = 500;
+// AGGRESSIVE: rendered cloud cells scale with the device tier. 120 low-poly
+// instances still reads as a full storm field; 4500-instance builds froze
+// weak phones outright.
+const MAX_WEATHER_CELLS = { low: 120, mid: 300, high: 500 };
 
 const ENDPOINT_GROUND_OFFSET = 0.4;
 const LOW_ALT_TERRAIN_CLEARANCE = 0.8;
 
+const LAYER_NAMES = ['weather', 'grid', 'airports', 'routes', 'aircraft'];
+
 // ---------------------------------------------------------------------------
-// Scene data group
+// Scene data group — built ONCE per payload. Weather has its own rebuildable
+// layer (group.userData.updateWeather) so the kit arriving late, or a
+// weather refresh, never rebuilds routes/planes/labels again.
 // ---------------------------------------------------------------------------
 
 export function createSceneDataGroup(payload, planeTemplate, initialProgress = 0,
                                      weatherMeshKit = null, groundSampler = null,
-                                     includeWeather = true) {
+                                     includeWeather = true, quality = 'high') {
     const group = new THREE.Group();
-    const updates = [];
+    const layers = {};
+    LAYER_NAMES.forEach(name => {
+        const layerGroup = new THREE.Group();
+        layerGroup.userData.layer = name;
+        layers[name] = layerGroup;
+        group.add(layerGroup);
+    });
 
-    if (includeWeather) renderGrid(payload.grid || [], group, weatherMeshKit, updates);
-    renderAltitudeLayers(payload.grid || [], group, updates);
-    renderAirports(payload.airports || [], group, updates, groundSampler);
+    const updates = [];
+    let weatherUpdates = [];
+
+    const buildWeather = (grid, kit) => {
+        // Remove the previous weather layer's update callbacks + objects.
+        for (let i = updates.length - 1; i >= 0; i--) {
+            if (weatherUpdates.includes(updates[i])) updates.splice(i, 1);
+        }
+        weatherUpdates = [];
+        disposeLayerChildren(layers.weather);
+        if (!kit) return;
+        renderGrid(grid || [], layers.weather, kit, weatherUpdates, quality);
+    };
+
+    if (includeWeather) buildWeather(payload.grid || [], weatherMeshKit);
+    renderAltitudeLayers(payload.grid || [], layers.grid, updates, quality);
+    renderAirports(payload.airports || [], layers.airports, updates, groundSampler);
 
     const flights = normalizeFlights(payload);
     const planeStates = [];
+    const aircraftMeshes = [];
 
     flights.forEach((flight, index) => {
         const color = FLIGHT_COLORS[index % FLIGHT_COLORS.length];
 
-        const baselineMesh = renderRoute(flight.baseline, BASELINE_COLOR, PathStyle.DASHED, group, 'baseline', groundSampler);
+        const baselineMesh = renderRoute(flight.baseline, BASELINE_COLOR, PathStyle.DASHED, layers.routes, 'baseline', groundSampler, quality);
         if (baselineMesh && baselineMesh.userData.update) updates.push(baselineMesh.userData.update);
         if (flight.previous_optimized) {
-            renderRoute(flight.previous_optimized, PREVIOUS_COLOR, PathStyle.DASHED, group, 'previous_optimized', groundSampler);
+            renderRoute(flight.previous_optimized, PREVIOUS_COLOR, PathStyle.DASHED, layers.routes, 'previous_optimized', groundSampler, quality);
         }
-        const optimizedMesh = renderRoute(flight.optimized, color, PathStyle.SOLID, group, 'optimized', groundSampler);
+        const optimizedMesh = renderRoute(flight.optimized, color, PathStyle.SOLID, layers.routes, 'optimized', groundSampler, quality);
         if (optimizedMesh && optimizedMesh.userData.update) updates.push(optimizedMesh.userData.update);
 
         if (optimizedMesh && planeTemplate) {
@@ -57,10 +82,22 @@ export function createSceneDataGroup(payload, planeTemplate, initialProgress = 0
             const planeSize = planeBounds.getSize(new THREE.Vector3());
             const largestDimension = Math.max(planeSize.x, planeSize.y, planeSize.z);
             if (largestDimension > 0) plane.scale.multiplyScalar(26 / largestDimension);
-            group.add(plane);
+            layers.aircraft.add(plane);
+
+            // --- Aircraft selection: tag for picking + an invisible
+            // oversized hit target (planes are tiny at corridor scale).
+            plane.userData.isAircraft = true;
+            plane.userData.flightIndex = index;
+            plane.userData.flightId = flight.id;
+            const hitProxy = new THREE.Mesh(
+                new THREE.SphereGeometry(20, 8, 6),
+                new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }),
+            );
+            plane.add(hitProxy);
+            aircraftMeshes.push(plane);
 
             const contrail = createContrail();
-            group.add(contrail.line);
+            layers.aircraft.add(contrail.line);
 
             // Stagger speeds so multiple aircraft never move in lockstep.
             const speed = 0.035 * (1 + index * 0.15);
@@ -76,11 +113,17 @@ export function createSceneDataGroup(payload, planeTemplate, initialProgress = 0
         }
     });
 
-    // HUD / progress read the lead aircraft; the full list is exposed too.
+    // HUD / progress read the selected aircraft; the full list is exposed too.
     group.userData.getFlightProgress = planeStates.length ? () => planeStates[0]().progress : null;
     group.userData.getPlaneState = planeStates.length ? planeStates[0] : null;
     group.userData.planeStates = planeStates;
+    group.userData.aircraftMeshes = aircraftMeshes;
+    group.userData.flightIds = flights.map(flight => flight.id);
     group.userData.flightCount = flights.length;
+    group.userData.setLayerVisible = (name, visible) => {
+        if (layers[name]) layers[name].visible = !!visible;
+    };
+    group.userData.updateWeather = (grid, kit) => buildWeather(grid, kit);
 
     group.userData.update = delta => updates.forEach(fn => fn(delta));
     return group;
@@ -105,126 +148,10 @@ function normalizeFlights(payload) {
 }
 
 // ---------------------------------------------------------------------------
-// Disposal
+// Legend extraction — plain data for the Flutter legend panel.
 // ---------------------------------------------------------------------------
 
-export function disposeSceneDataGroup(group) {
-    const geometries = new Set();
-    const materials = new Set();
-    const textures = new Set();
-
-    group.traverse(object => {
-        if (object.isInstancedMesh) object.dispose();
-
-        if (object.geometry && !object.geometry.userData.shared) {
-            geometries.add(object.geometry);
-        }
-        if (Array.isArray(object.material)) {
-            object.material.forEach(material => {
-                if (!material.userData.shared) collectMaterial(material, materials, textures);
-            });
-        } else if (object.material && !object.material.userData.shared) {
-            collectMaterial(object.material, materials, textures);
-        }
-    });
-
-    geometries.forEach(geometry => geometry.dispose());
-    materials.forEach(material => material.dispose());
-    textures.forEach(texture => {
-        if (!texture.userData.shared) texture.dispose();
-    });
-}
-
-// ---------------------------------------------------------------------------
-// Airports / map alignment
-// ---------------------------------------------------------------------------
-
-export function alignAirportsToMap(group, mapMesh) {
-    if (!mapMesh) return;
-
-    const airportMarkers = [];
-    group.traverse(object => {
-        if (object.userData.isAirportMarker) airportMarkers.push(object);
-    });
-    if (airportMarkers.length === 0) return;
-
-    mapMesh.updateWorldMatrix(true, true);
-    const mapBounds = new THREE.Box3().setFromObject(mapMesh);
-    const raycaster = new THREE.Raycaster();
-    raycaster.far = mapBounds.getSize(new THREE.Vector3()).y + 2;
-
-    airportMarkers.forEach(marker => {
-        raycaster.ray.origin.set(marker.position.x, mapBounds.max.y + 1, marker.position.z);
-        raycaster.ray.direction.set(0, -1, 0);
-        const surface = raycaster.intersectObject(mapMesh, true)[0];
-        if (surface) marker.position.y = surface.point.y + marker.userData.markerRadius;
-    });
-}
-
-// ---------------------------------------------------------------------------
-// DOM renderers
-// ---------------------------------------------------------------------------
-
-export function renderMetrics(metrics) {
-    const setText = (id, value, suffix = '') => {
-        const element = document.getElementById(id);
-        if (element) element.textContent = `${value == null ? '—' : value}${suffix}`;
-    };
-
-    const baseline = metrics.baseline || {};
-    const optimized = metrics.optimized || {};
-    setText('baseline-distance', baseline.distance_km, ' km');
-    setText('baseline-time', baseline.time_min, ' min');
-    setText('baseline-exposure', baseline.avg_exposure);
-    setText('optimized-distance', optimized.distance_km, ' km');
-    setText('optimized-time', optimized.time_min, ' min');
-    setText('optimized-exposure', optimized.avg_exposure);
-
-    const deltaEl = document.getElementById('optimized-delta');
-    if (deltaEl) {
-        const parts = [];
-        const fmt = (value, unit, round = false) => {
-            if (value == null) return null;
-            const shown = round ? Math.round(value).toLocaleString() : value.toFixed(1);
-            return `${value > 0 ? '+' : ''}${shown} ${unit}`;
-        };
-        const dTime = optimized.time_min != null && baseline.time_min != null
-            ? optimized.time_min - baseline.time_min : null;
-        const dFuel = optimized.fuel_estimated_kg != null && baseline.fuel_estimated_kg != null
-            ? optimized.fuel_estimated_kg - baseline.fuel_estimated_kg : null;
-        const dExp = optimized.avg_exposure != null && baseline.avg_exposure != null
-            ? optimized.avg_exposure - baseline.avg_exposure : null;
-        const t = fmt(dTime, 'min');
-        const f = fmt(dFuel, 'kg fuel', true);
-        const e = fmt(dExp, 'exp');
-        if (t) parts.push(t);
-        if (f) parts.push(f);
-        if (e) parts.push(e);
-        deltaEl.textContent = parts.length ? `Δ ${parts.join(' · ')}` : '—';
-        const better = (dTime ?? 0) <= 0 && (dExp ?? 0) <= 0;
-        deltaEl.classList.toggle('delta-good', better && parts.length > 0);
-        deltaEl.classList.toggle('delta-bad', !better && parts.length > 0);
-    }
-}
-
-export function renderMeta(meta) {
-    const status = document.getElementById('data-status');
-    if (!status) return;
-
-    const source = meta.source === 'cache' ? 'CACHED' : String(meta.source || 'UNKNOWN').toUpperCase();
-    const details = [source];
-    if (meta.scenario_title) details.push(meta.scenario_title);
-    if (meta.event_count != null) details.push(`${meta.event_count} weather events`);
-    if (meta.fetched_at) details.push(`fetched ${meta.fetched_at}`);
-    if (meta.trajectory_status) details.push(meta.trajectory_status);
-    status.textContent = details.join('  ·  ');
-}
-
-export function renderAltitudeLegend(grid) {
-    const list = document.getElementById('altitude-level-list');
-    if (!list) return;
-    list.replaceChildren();
-
+export function extractPressureLevels(grid) {
     const levels = new Map();
     grid.forEach(point => {
         Object.entries(point.levels || {}).forEach(([pressure, data]) => {
@@ -235,63 +162,111 @@ export function renderAltitudeLegend(grid) {
         });
     });
 
-    [...levels.entries()]
+    return [...levels.entries()]
         .map(([pressure, data]) => ({
             pressure,
             height: median(data.heights),
             altitude: median(data.altitudes),
         }))
         .sort((left, right) => left.height - right.height)
-        .forEach((level, index) => {
-            const color = PRESSURE_LEVEL_COLORS[index % PRESSURE_LEVEL_COLORS.length];
-            const row = document.createElement('div');
-            row.className = 'altitude-level-row';
+        .map((level, index) => ({
+            pressure: String(level.pressure),
+            altitude_km: Number(level.altitude.toFixed(1)),
+            color: `#${PRESSURE_LEVEL_COLORS[index % PRESSURE_LEVEL_COLORS.length]
+                .toString(16).padStart(6, '0')}`,
+        }));
+}
 
-            const swatch = document.createElement('span');
-            swatch.className = 'altitude-level-swatch';
-            const hex = `#${color.toString(16).padStart(6, '0')}`;
-            swatch.style.backgroundColor = hex;
-            swatch.style.color = hex;
+// ---------------------------------------------------------------------------
+// Disposal — shared geometries/materials/textures survive scenario switches.
+// ---------------------------------------------------------------------------
 
-            const pressure = document.createElement('span');
-            pressure.textContent = `${level.pressure} hPa`;
+function collectDisposables(root, geometries, materials, textures) {
+    root.traverse(object => {
+        if (object.isInstancedMesh) object.dispose();
+        if (object.geometry && !object.geometry.userData.shared) geometries.add(object.geometry);
+        if (Array.isArray(object.material)) {
+            object.material.forEach(material => {
+                if (!material.userData.shared) collectMaterial(material, materials, textures);
+            });
+        } else if (object.material && !object.material.userData.shared) {
+            collectMaterial(object.material, materials, textures);
+        }
+    });
+}
 
-            const altitude = document.createElement('span');
-            altitude.textContent = `${level.altitude.toFixed(1)} km`;
+function disposeCollected(geometries, materials, textures) {
+    geometries.forEach(geometry => geometry.dispose());
+    materials.forEach(material => material.dispose());
+    textures.forEach(texture => {
+        if (!texture.userData.shared) texture.dispose();
+    });
+}
 
-            row.append(swatch, pressure, altitude);
-            list.append(row);
-        });
+export function disposeSceneDataGroup(group) {
+    const geometries = new Set();
+    const materials = new Set();
+    const textures = new Set();
+    collectDisposables(group, geometries, materials, textures);
+    disposeCollected(geometries, materials, textures);
+}
+
+function disposeLayerChildren(layerGroup) {
+    const geometries = new Set();
+    const materials = new Set();
+    const textures = new Set();
+    for (const child of [...layerGroup.children]) {
+        collectDisposables(child, geometries, materials, textures);
+        layerGroup.remove(child);
+    }
+    disposeCollected(geometries, materials, textures);
+}
+
+// ---------------------------------------------------------------------------
+// Airports — aligned via the O(1) vertex heightmap sampler (no raycasts).
+// ---------------------------------------------------------------------------
+
+export function alignAirportsToMap(group, groundSampler) {
+    if (!groundSampler) return;
+
+    const airportMarkers = [];
+    group.traverse(object => {
+        if (object.userData.isAirportMarker) airportMarkers.push(object);
+    });
+
+    airportMarkers.forEach(marker => {
+        const groundY = groundSampler(marker.position.x, marker.position.z);
+        if (groundY != null) marker.position.y = groundY + marker.userData.markerRadius;
+    });
 }
 
 // ---------------------------------------------------------------------------
 // Weather grid — clouds only, capped instance count
 // ---------------------------------------------------------------------------
 
-function renderGrid(grid, group, weatherMeshKit, updates) {
+function renderGrid(grid, layerGroup, weatherMeshKit, updates, quality) {
     if (!weatherMeshKit) return;
 
     const allPoints = pointsFromGrid(grid);
-    if (allPoints.length === 0) return;
+    if (allPoints.length === 0) {
+        console.warn('[weather] grid has no renderable cells — levels missing both y and altitude_km?');
+        return;
+    }
 
-    // Score every cell once; keep a Map so the cap can sort by severity.
-    const withScores = new Map();
-    allPoints.forEach(point => {
-        const levelScores = Object.values(point.levels || {})
-            .map(level => (level && Number.isFinite(level.exposure_score)) ? level.exposure_score : 0);
-        const own = Number.isFinite(point.exposure_score) ? point.exposure_score : 0;
-        withScores.set(point, Math.max(own, ...(levelScores.length ? levelScores : [0])));
-    });
+    const scoreOf = point => (Number.isFinite(point.score) ? point.score : 0);
 
-    const significant = allPoints.filter(point => withScores.get(point) >= 20);
+    // Prefer significant cells; fall back to everything so the sky is
+    // never empty when the forecast is calm.
+    const significant = allPoints.filter(point => scoreOf(point) >= 20);
     let points = significant.length >= 4 ? significant : allPoints;
 
     // PERFORMANCE: keep only the most severe cells when the field is huge.
-    if (points.length > MAX_WEATHER_CELLS) {
+    const maxCells = MAX_WEATHER_CELLS[quality] ?? MAX_WEATHER_CELLS.high;
+    if (points.length > maxCells) {
         points = points
             .slice()
-            .sort((a, b) => withScores.get(b) - withScores.get(a))
-            .slice(0, MAX_WEATHER_CELLS);
+            .sort((a, b) => scoreOf(b) - scoreOf(a))
+            .slice(0, maxCells);
     }
 
     const stepX = coordinateStep(points, 'x');
@@ -301,7 +276,10 @@ function renderGrid(grid, group, weatherMeshKit, updates) {
         coordinateStep(points, 'y') || Math.min(stepX, stepZ)));
 
     const clusters = buildWeatherClusters(points, stepX, stepZ);
-    if (clusters.length === 0) return;
+    if (clusters.length === 0) {
+        console.warn('[weather] clustering produced 0 clusters');
+        return;
+    }
 
     const markers = createWeatherSpanMarkers(clusters, weatherMeshKit, {
         cellStepX: stepX,
@@ -309,14 +287,16 @@ function renderGrid(grid, group, weatherMeshKit, updates) {
         layerHeight,
     });
     if (markers.userData.update) updates.push(markers.userData.update);
-    group.add(markers);
+    layerGroup.add(markers);
+
+    console.log(`[weather] ${allPoints.length} grid cells -> ${points.length} rendered in ${clusters.length} clusters`);
 }
 
 // ---------------------------------------------------------------------------
 // Altitude layers
 // ---------------------------------------------------------------------------
 
-function renderAltitudeLayers(grid, group, updates) {
+function renderAltitudeLayers(grid, layerGroup, updates, quality) {
     const levels = new Map();
     const xValues = [];
     const zValues = [];
@@ -357,7 +337,7 @@ function renderAltitudeLayers(grid, group, updates) {
     });
     const pillars = new THREE.LineSegments(pillarGeometry, pillarMaterial);
     pillars.renderOrder = 2;
-    group.add(pillars);
+    layerGroup.add(pillars);
 
     let pillarTime = 0;
     updates.push(delta => {
@@ -383,7 +363,7 @@ function renderAltitudeLayers(grid, group, updates) {
         });
         const outline = new THREE.LineLoop(outlineGeometry, outlineMaterial);
         outline.renderOrder = 2;
-        group.add(outline);
+        layerGroup.add(outline);
 
         let t = index * 1.3;
         updates.push(delta => {
@@ -391,11 +371,13 @@ function renderAltitudeLayers(grid, group, updates) {
             outlineMaterial.opacity = 0.35 + 0.22 * (0.5 + 0.5 * Math.sin(t * 1.4));
         });
 
+        // AGGRESSIVE: canvas-texture label sprites are skipped on low-end —
+        // the Flutter legend panel shows the same information for free.
         const altitude = median(data.altitudes);
-        if (Number.isFinite(altitude)) {
+        if (quality !== 'low' && Number.isFinite(altitude)) {
             const label = createAltitudeLabel(`${pressure} hPa`, `${altitude.toFixed(1)} km`, color);
             label.position.set(minX + 26 + index * 78, y, minZ + 18);
-            group.add(label);
+            layerGroup.add(label);
         }
     });
 }
@@ -485,7 +467,7 @@ function groundGlowTexture() {
     return texture;
 }
 
-function renderAirports(airports, group, updates, groundSampler) {
+function renderAirports(airports, layerGroup, updates, groundSampler) {
     if (!Array.isArray(airports) || airports.length === 0) return;
 
     const coreGeometry = new THREE.SphereGeometry(6, 16, 16);
@@ -506,7 +488,7 @@ function renderAirports(airports, group, updates, groundSampler) {
             const groundY = groundSampler(airport.x, airport.z);
             if (groundY != null) marker.position.y = groundY + marker.userData.markerRadius;
         }
-        group.add(marker);
+        layerGroup.add(marker);
 
         const ringMaterial = new THREE.MeshBasicMaterial({
             color: 0xe3b563,
@@ -519,7 +501,7 @@ function renderAirports(airports, group, updates, groundSampler) {
         ring.rotation.x = -Math.PI / 2;
         ring.position.copy(marker.position);
         ring.renderOrder = 5;
-        group.add(ring);
+        layerGroup.add(ring);
 
         const beamMaterial = new THREE.MeshBasicMaterial({
             map: beamTexture(),
@@ -533,7 +515,7 @@ function renderAirports(airports, group, updates, groundSampler) {
         const beam = new THREE.Mesh(beamGeometry, beamMaterial);
         beam.position.copy(marker.position);
         beam.renderOrder = 1;
-        group.add(beam);
+        layerGroup.add(beam);
 
         const discMaterial = new THREE.MeshBasicMaterial({
             map: groundGlowTexture(),
@@ -546,11 +528,11 @@ function renderAirports(airports, group, updates, groundSampler) {
         const disc = new THREE.Mesh(discGeometry, discMaterial);
         disc.rotation.x = -Math.PI / 2;
         disc.renderOrder = 0;
-        group.add(disc);
+        layerGroup.add(disc);
 
         const code = airport.code || airport.name;
         const label = code ? createAirportLabel(String(code)) : null;
-        if (label) group.add(label);
+        if (label) layerGroup.add(label);
 
         let phase = (airport.x % 10) / 10;
         let time = 0;
@@ -619,7 +601,7 @@ function createAirportLabel(text) {
 // Routes — raw backend paths, terrain-snapped, tagged for the inspector
 // ---------------------------------------------------------------------------
 
-function renderRoute(waypoints, color, style, group, label = 'route', groundSampler = null) {
+function renderRoute(waypoints, color, style, layerGroup, label = 'route', groundSampler = null, quality = 'high') {
     if (!Array.isArray(waypoints) || waypoints.length < 2 || !waypoints.every(hasPosition)) return null;
 
     const path = waypoints.map(waypoint => ({ ...waypoint }));
@@ -642,12 +624,12 @@ function renderRoute(waypoints, color, style, group, label = 'route', groundSamp
         color,
         style,
     });
-    const mesh = curve.createMesh();
+    const mesh = curve.createMesh(quality);
     mesh.userData.flightCurve = curve;
     mesh.userData.routeLabel = label;
     mesh.userData.routeColor = color;
     mesh.userData.routeWaypoints = path;
-    group.add(mesh);
+    layerGroup.add(mesh);
     return mesh;
 }
 

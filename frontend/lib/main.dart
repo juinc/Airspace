@@ -1,26 +1,43 @@
+import 'package:flutter/foundation.dart'
+    show kIsWeb, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
-import 'package:frontend/utils/overlay_3js.dart';
+
+import 'pages/airspace_page.dart';
+
+/// Scene URL per environment, including the backend API base so the scene
+/// works on Android emulators (10.0.2.2 is the host machine's loopback).
+String resolveSceneUrl() {
+  const scenePort =
+      String.fromEnvironment('AIRSPACE_SCENE_PORT', defaultValue: '5173');
+  const apiPort =
+      String.fromEnvironment('AIRSPACE_API_PORT', defaultValue: '8000');
+
+  var host = 'localhost';
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+    host = '10.0.2.2';
+  }
+  return 'http://$host:$scenePort/?api=http://$host:$apiPort';
+}
 
 void main() {
-  runApp(const MaterialApp(
-    debugShowCheckedModeBanner: false,
-    home: ThreeJSView(),
-  ));
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const AirspaceApp());
 }
 
-class ThreeJSView extends StatefulWidget {
-  const ThreeJSView({super.key});
+class AirspaceApp extends StatelessWidget {
+  const AirspaceApp({super.key});
 
-  @override
-  State<ThreeJSView> createState() => _ThreeJSViewState();
-}
-
-class _ThreeJSViewState extends State<ThreeJSView> {
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
-      backgroundColor: Color(0xFF101216),
-      body: Overlay3js(),
+    return MaterialApp(
+      title: 'Airspace — Executive Flight Intelligence',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        useMaterial3: true,
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: const Color(0xFF05080E),
+      ),
+      home: AirspacePage(sceneUrl: resolveSceneUrl()),
     );
   }
 }

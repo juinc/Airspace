@@ -57,7 +57,19 @@ from synthetic_scenarios import (
 
 PRESSURE_LEVELS = sorted(set(_CLIENT_PRESSURE_LEVELS) | {500})
 
-app = FastAPI(title="Airspace Weather Backend")
+from contextlib import asynccontextmanager
+import threading
+
+
+@asynccontextmanager
+async def _lifespan(app):
+    # Pre-warm the default scenario in a daemon thread so the user's FIRST
+    # request is served from the in-memory cache instead of running A*.
+    threading.Thread(target=_prewarm_scenarios, daemon=True).start()
+    yield
+
+
+app = FastAPI(title="Airspace Weather Backend", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -101,8 +113,10 @@ SCENE_CACHE_VERSION = "full-aifs-scene-v3"
 
 # ---------------------------------------------------------------------------
 # In-memory scenario cache. Synthetic scenarios are deterministic given
-# (scenario, mode, seed, progress, aircraft) — recomputing A* for a repeat
-# visit is pure waste. Bounded, oldest-entry eviction.
+# (scenario, mode, seed, progress) — recomputing A* for a repeat visit is
+# pure waste. Bounded, oldest-entry eviction.
+# NOTE: all endpoints below are `def` (sync) — FastAPI runs them in its
+# threadpool, so CPU-heavy A* work never blocks the event loop.
 # ---------------------------------------------------------------------------
 _SCENARIO_CACHE = {}
 _SCENARIO_CACHE_MAX = 16
@@ -117,6 +131,13 @@ def _cached_scenario(key, builder):
         _SCENARIO_CACHE.pop(next(iter(_SCENARIO_CACHE)))
     _SCENARIO_CACHE[key] = payload
     return payload
+
+def _prewarm_scenarios():
+    for scenario in ("crossroads-storm", "storm-wall", "slalom"):
+        try:
+            test_scenario(scenario)
+        except Exception:  # pre-warming is best-effort; never block startup
+            pass
 
 
 class AircraftProfileRequest(BaseModel):
@@ -581,11 +602,13 @@ def test_scenario(
     mode: str = "Balanced",
     route_progress: float = 0.35,
     weather_seed: int = 0,
-    aircraft: Optional[AircraftProfileRequest] = None,
 ):
-    profile = AircraftProfile(**aircraft.model_dump()) if aircraft else AircraftProfile()
-    aircraft_key = tuple(sorted(aircraft.model_dump().items())) if aircraft else None
-    cache_key = (scenario, mode, round(route_progress, 3), weather_seed, aircraft_key)
+    # NOTE: the `aircraft` query parameter was removed — FastAPI cannot bind
+    # a Pydantic body model as a query param and any request carrying it
+    # would fail. The frontend never sends it; POST /optimize covers custom
+    # aircraft profiles.
+    profile = AircraftProfile()
+    cache_key = (scenario, mode, round(route_progress, 3), weather_seed, None)
 
     # --- Multi-flight scenarios: several aircraft across several airports ---
     if scenario in MULTI_FLIGHT_SCENARIOS:
@@ -626,8 +649,6 @@ def test_scenario(
 
     if scenario == "real-meteo":
         grid_request = GridRequest(test_mode=False, mode=mode)
-        if aircraft:
-            grid_request.aircraft = aircraft
         payload = test_scene_data(grid_request)
         meta = payload.setdefault("meta", {})
         meta["scenario"] = scenario
