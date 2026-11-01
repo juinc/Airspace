@@ -12,12 +12,14 @@ import * as THREE from 'three';
  * does not change: { renderer, domElement, setSize(w, h), render() }.
  */
 export function createRenderer(container, scene, camera) {
+    const isMobile = window.matchMedia('(max-width: 760px), (pointer: coarse)').matches;
+    const maxPixelRatio = isMobile ? 1 : 1.25;
     const renderer = new THREE.WebGLRenderer({
-        antialias: true,
+        antialias: !isMobile,
         alpha: false,
         powerPreference: 'high-performance',
     });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxPixelRatio));
     renderer.setSize(container.clientWidth || window.innerWidth, container.clientHeight || window.innerHeight);
 
     // Shadows OFF: a 2048x VSM shadow map re-renders the whole scene a
@@ -34,11 +36,22 @@ export function createRenderer(container, scene, camera) {
         domElement: renderer.domElement,
 
         setSize(width, height) {
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxPixelRatio));
             renderer.setSize(width, height);
         },
 
         render() {
             renderer.render(scene, camera);
+        },
+
+        getInfo() {
+            return {
+                calls: renderer.info.render.calls,
+                triangles: renderer.info.render.triangles,
+                geometries: renderer.info.memory.geometries,
+                textures: renderer.info.memory.textures,
+                pixelRatio: renderer.getPixelRatio(),
+            };
         },
     };
 }

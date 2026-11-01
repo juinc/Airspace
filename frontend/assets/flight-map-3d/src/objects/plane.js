@@ -9,8 +9,8 @@ const modelPath = `${import.meta.env.BASE_URL}${planeModelConfig.path.replace(/^
 // HUD and corrupts vertical-speed / phase classification.
 const VERTICAL_EXAGGERATION = 4;
 
-export async function createPlaneTemplate() {
-    const model = await loadModel(modelPath);
+export async function createPlaneTemplate(path = modelPath) {
+    const model = await loadModel(path);
     model.scale.setScalar(planeModelConfig.scale);
     return model;
 }

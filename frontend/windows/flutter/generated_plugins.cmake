@@ -4,7 +4,6 @@
 
 list(APPEND FLUTTER_PLUGIN_LIST
   flutter_angle
-  webview_flutter_windows
   webview_windows
 )
 

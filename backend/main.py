@@ -3,6 +3,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, Field
 from requests import RequestException
 
@@ -67,6 +68,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # PERFORMANCE: 0.5° default grid. Halves live-fetch points (~4x fewer A*
 # nodes) with no visible loss — AIFS itself is 0.25° and clouds are huge.

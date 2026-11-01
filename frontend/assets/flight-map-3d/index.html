@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Airspace — Executive Flight Intelligence</title>
     <style>
       :root {
@@ -81,6 +81,13 @@
         letter-spacing: 0.35em;
         text-transform: uppercase;
         color: var(--faint);
+      }
+      #boot-status {
+        max-width: min(80vw, 360px);
+        min-height: 1.5em;
+        color: var(--muted);
+        font-size: 11px;
+        text-align: center;
       }
       .boot-bar {
         width: 180px;
@@ -289,13 +296,31 @@
       }
 
       @media (max-width: 760px) {
-        #scene-overlay { inset: 10px 10px auto; flex-direction: column; }
+        #scene-overlay {
+          inset: calc(10px + env(safe-area-inset-top)) 10px auto;
+          flex-direction: column;
+        }
+        .brand-block { max-width: 100%; }
+        .scenario-control { width: 100%; min-width: 0; }
         .metrics {
           top: auto;
-          bottom: 64px;
+          bottom: calc(10px + env(safe-area-inset-bottom));
           right: 10px;
           left: 10px;
-          grid-template-columns: 1fr 1fr;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 8px;
+          padding: 10px;
+        }
+        .metric-row { gap: 6px; }
+        .metric-row span { font-size: 10px; }
+        .metric-row strong { font-size: 11px; }
+        #altitude-legend {
+          top: calc(195px + env(safe-area-inset-top));
+          right: 10px;
+          bottom: auto;
+          min-width: 174px;
+          max-height: 18vh;
+          overflow-y: auto;
         }
         #terrain-note { display: none; }
       }
@@ -308,6 +333,7 @@
     <div id="boot-overlay">
       <div class="boot-brand"><b>AIR</b>SPACE</div>
       <div class="boot-sub">Executive Flight Intelligence</div>
+      <div id="boot-status" role="status" aria-live="polite">Preparing your flight scene…</div>
       <div class="boot-bar"><span></span></div>
     </div>
 
