@@ -1,41 +1,73 @@
 {
   "measured_at": "2026-11-01",
-  "revision": "a613932",
+  "revision": "051aac5",
   "environment": {
-    "node": "v26.8.1",
+    "node": "v26.13.0",
     "backend_virtualenv_python": "3.12.10",
     "flutter_sdk": "unavailable on PATH",
-    "browser_device_profile": "not available in this environment"
+    "browser_device_profile": "Playwright Chromium headless mobile emulation, 390x844 viewport, DPR 1, loopback HTTP"
   },
   "vite_production_build": {
     "status": "passed",
-    "wall_time_seconds": 2.42,
-    "html_kb_gzip": 2.43,
-    "javascript_kb_minified": 715.08,
-    "javascript_kb_gzip": 182.94,
+    "wall_time_seconds": 4.24,
+    "html_kb_gzip": 0.48,
+    "javascript_kb_minified": 707.86,
+    "javascript_kb_gzip": 181.71,
+    "javascript_chunks_bytes": {
+      "application": 68779,
+      "three_vendor": 593569,
+      "gltf_loader": 45512
+    },
     "warning": "One minified JavaScript chunk exceeds Vite's 500 KB warning threshold."
   },
   "backend_tests": {
-    "status": "blocked by runner temp-directory permissions before complete baseline",
-    "fast_fail_run": {
-      "result": "14 passed, 5 errors",
-      "duration_seconds": 5.06,
-      "error": "pytest could not create tmp_path under the sandbox-owned system Temp directory; rerun with --basetemp inside the workspace."
-    }
+    "status": "passed",
+    "passed": 89,
+    "warnings": 1,
+    "duration_seconds": 27.77
+  },
+  "production_browser_benchmark": {
+    "status": "passed",
+    "scenario": "crossroads-storm",
+    "scenario_data_ms": 1355,
+    "scene_ready_ms": 15532,
+    "scenario_switch_scenarios": [
+      "storm-wall",
+      "low-corridor",
+      "slalom"
+    ],
+    "scenario_switch_ms": [
+      5427,
+      2403,
+      1615
+    ],
+    "headless_mobile_emulation_fps": 7,
+    "browser_errors": [],
+    "renderer_stats": null
+  },
+  "api_initial_scene_response": {
+    "response_ms": 422,
+    "payload_bytes": 232971,
+    "gzip_bytes": 28478,
+    "wire_bytes": 28199
+  },
+  "assets_bytes": {
+    "aircraft_mobile": 210664,
+    "terrain_mobile": 3382460,
+    "terrain_desktop": 28574244,
+    "weather_models": 972384,
+    "clear_model": 0
   },
   "targets": {
     "cold_load_seconds_4g": null,
     "scenario_switch_seconds": null,
     "mobile_fps": null,
-    "javascript_gzip_kb": 182.94,
+    "javascript_gzip_kb": 181.71,
     "gpu_memory_mb": null,
     "backend_p95_ms": null,
-    "response_gzip_kb": null,
+    "response_gzip_kb": 27.81,
     "draw_calls_per_frame": null,
-    "unmeasured_reason": "No Flutter SDK or browser/device profiling surface is available; backend API timing and response size will be measured after the endpoint contract is repaired."
+    "unmeasured_reason": "The browser run used unthrottled local headless emulation, not a physical device or 4G profile. GPU metrics and a sufficiently large API sample for p95 were unavailable. The production renderer stats hook returned null."
   },
-  "aircraft_assets_bytes": null,
-  "weather_assets_bytes": null,
-  "clear_model_bytes": null,
-  "notes": "This is the pre-change baseline. Bundle sizes are the existing Vite build report. Null values are not estimates."
+  "notes": "Gzip sizes use Node zlib on the generated production bundles and initial scene payload. Headless FPS and local timings are not representative of a physical device or network."
 }

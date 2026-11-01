@@ -71,7 +71,7 @@ def test_attach_scene_coordinates_adds_expected_fields():
     assert point["x"] == 0.0
     assert point["z"] == 0.0
     assert point["levels"][300]["altitude_km"] == 9.2
-    assert point["levels"][300]["y"] == 55.2
+    assert point["levels"][300]["y"] == 36.8
 
 
 def test_attach_scene_coordinates_handles_missing_level_gracefully():

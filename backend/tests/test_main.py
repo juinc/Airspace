@@ -1,3 +1,7 @@
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -12,18 +16,65 @@ def test_health_endpoint():
     assert response.json() == {"status": "ok"}
 
 
-def test_default_scene_grid_uses_the_requested_288_point_region():
+def test_scenario_cache_returns_copies_and_evicts_least_recently_used(monkeypatch):
+    monkeypatch.setattr(main, "_SCENARIO_CACHE", OrderedDict())
+    monkeypatch.setattr(main, "_SCENARIO_CACHE_MAX", 2)
+    calls = []
+
+    def build_a():
+        calls.append("a")
+        return {"items": [{"value": 1}]}
+
+    first = main._cached_scenario("a", build_a)
+    first["items"][0]["value"] = 99
+    assert main._cached_scenario("a", build_a) == {"items": [{"value": 1}]}
+    assert calls == ["a"]
+
+    main._cached_scenario("b", lambda: {"value": "b"})
+    main._cached_scenario("a", build_a)
+    main._cached_scenario("c", lambda: {"value": "c"})
+
+    assert list(main._SCENARIO_CACHE) == ["a", "c"]
+
+
+def test_scenario_cache_builds_different_keys_concurrently(monkeypatch):
+    monkeypatch.setattr(main, "_SCENARIO_CACHE", OrderedDict())
+    barrier = Barrier(2)
+
+    def build(value):
+        barrier.wait(timeout=3)
+        return {"value": value}
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(
+            lambda value: main._cached_scenario(
+                value, lambda: build(value)
+            ),
+            ("a", "b"),
+        ))
+
+    assert results == [{"value": "a"}, {"value": "b"}]
+
+
+def test_default_scene_grid_uses_the_country_envelope_and_coarse_resolution():
     config = main.DEFAULT_CONFIG
     points = main.build_horizontal_grid(
         config["min_lat"], config["max_lat"],
         config["min_lon"], config["max_lon"],
         config["lat_step"], config["lon_step"],
     )
+    masked_points = main.build_horizontal_grid(
+        config["min_lat"], config["max_lat"],
+        config["min_lon"], config["max_lon"],
+        config["lat_step"], config["lon_step"],
+        mask=main.inside_with_buffer,
+    )
 
-    assert len(points) == 288
-    assert (config["min_lat"], config["max_lat"]) == (43.75, 47.50)
-    assert (config["min_lon"], config["max_lon"]) == (22.75, 27.00)
-    assert config["lat_step"] == config["lon_step"] == 0.25
+    assert len(points) == 242
+    assert 0 < len(masked_points) < len(points)
+    assert (config["min_lat"], config["max_lat"]) == (43.5, 48.5)
+    assert (config["min_lon"], config["max_lon"]) == (19.5, 30.0)
+    assert config["lat_step"] == config["lon_step"] == 0.5
     assert all(
         config["min_lat"] <= airport["lat"] <= config["max_lat"]
         and config["min_lon"] <= airport["lon"] <= config["max_lon"]
@@ -66,21 +117,28 @@ def test_test_weather_endpoint_returns_cache_when_available(monkeypatch):
     assert body["data"][0]["x"] is not None
 
 
-def test_weather_grid_test_mode_limits_to_four_points(monkeypatch):
+def test_weather_grid_test_mode_caps_to_36_points(monkeypatch):
     monkeypatch.setattr(main, "load_cache", lambda key: None)
     monkeypatch.setattr(main, "save_cache", lambda key, payload: None)
     monkeypatch.setattr(main, "fetch_forecast", lambda lat, lon: {"hourly": {"time": []}})
     monkeypatch.setattr(
         main,
         "parse_response",
-        lambda raw, lat, lon, levels, forecast_index=0: [{} for _ in lat],
+        lambda raw, latitudes, longitudes, levels, forecast_index=0: [
+            {
+                "lat": lat,
+                "lon": lon,
+                "levels": {level: {} for level in levels},
+            }
+            for lat, lon in zip(latitudes, longitudes)
+        ],
     )
     monkeypatch.setattr(main, "select_forecast_index", lambda raw: 0)
 
     response = client.post("/weather-grid", json={"test_mode": True})
 
     assert response.status_code == 200
-    assert response.json()["point_count"] == 4
+    assert response.json()["point_count"] == 36
 
 
 def test_scene_data_includes_backend_positioned_airports(monkeypatch):
@@ -143,37 +201,33 @@ def test_scene_data_includes_backend_positioned_airports(monkeypatch):
 
 
 def test_optimize_endpoint_returns_routes_for_selected_mode(monkeypatch):
-    grid = main.attach_scene_coordinates(
-        [
-            {
-                "lat": 45.5,
-                "lon": 23.75,
-                "levels": {
-                    level: {
-                        "geopotential_height": 10400,
-                        "exposure_score": None,
-                    }
-                    for level in main.PRESSURE_LEVELS
-                },
-            }
-        ],
-        main.PRESSURE_LEVELS,
-    )
+    grid = []
     requested_test_modes = []
+    requested_modes = []
 
     def fake_scene_grid(req):
         requested_test_modes.append(req.test_mode)
         return {}, grid, "live"
 
+    def fake_scene_routes(grid_results, mode, profile):
+        requested_modes.append(mode)
+        return {
+            "baseline": [],
+            "optimized": [],
+            "metrics": {"optimized": {"avg_exposure": None}},
+            "reasoning": {"mode": mode},
+        }
+
     monkeypatch.setattr(main, "_scene_grid", fake_scene_grid)
+    monkeypatch.setattr(main, "_scene_routes", fake_scene_routes)
 
     response = client.post("/optimize", json={"mode": "Lower-exposure"})
 
     assert response.status_code == 200
     assert requested_test_modes == [False]
+    assert requested_modes == ["lower-exposure"]
     routes = response.json()
     assert routes["reasoning"]["mode"] == "lower-exposure"
-    assert len(routes["baseline"]) == len(routes["optimized"])
     assert routes["metrics"]["optimized"]["avg_exposure"] is None
 
 
@@ -185,17 +239,23 @@ def test_optimize_endpoint_rejects_unknown_mode():
 
 
 def test_scene_endpoint_allows_local_frontend_cors():
-    response = client.options(
-        "/test-scene-data",
-        headers={
-            "Origin": "http://localhost:5173",
-            "Access-Control-Request-Method": "POST",
-            "Access-Control-Request-Headers": "content-type",
-        },
-    )
+    for origin in (
+        "http://localhost:5173",
+        "http://127.0.0.1:5174",
+        "https://appassets.androidplatform.net",
+        "null",
+    ):
+        response = client.options(
+            "/test-scene-data",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
 
-    assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+        assert response.status_code == 200
+        assert response.headers["access-control-allow-origin"] == origin
 
 
 def test_real_meteo_scenario_uses_full_live_scene(monkeypatch):
@@ -291,7 +351,7 @@ def test_replan_endpoint_returns_new_weather_and_restarts_from_airborne_position
     assert response.status_code == 200
     payload = response.json()
     assert payload["weather_update"]["replanned"] is True
-    assert payload["meta"]["scenario"] == "drastic-weather-change"
+    assert payload["meta"]["scenario"] == "in-flight-replan"
     assert payload["routes"]["optimized"][0]["lat"] == pytest.approx(
         payload["weather_update"]["resume_position"]["lat"]
     )

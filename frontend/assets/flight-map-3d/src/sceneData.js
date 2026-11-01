@@ -162,109 +162,6 @@ export function alignAirportsToMap(group, mapMesh) {
 }
 
 // ---------------------------------------------------------------------------
-// DOM renderers
-// ---------------------------------------------------------------------------
-
-export function renderMetrics(metrics) {
-    const setText = (id, value, suffix = '') => {
-        const element = document.getElementById(id);
-        if (element) element.textContent = `${value == null ? '—' : value}${suffix}`;
-    };
-
-    const baseline = metrics.baseline || {};
-    const optimized = metrics.optimized || {};
-    setText('baseline-distance', baseline.distance_km, ' km');
-    setText('baseline-time', baseline.time_min, ' min');
-    setText('baseline-exposure', baseline.avg_exposure);
-    setText('optimized-distance', optimized.distance_km, ' km');
-    setText('optimized-time', optimized.time_min, ' min');
-    setText('optimized-exposure', optimized.avg_exposure);
-
-    const deltaEl = document.getElementById('optimized-delta');
-    if (deltaEl) {
-        const parts = [];
-        const fmt = (value, unit, round = false) => {
-            if (value == null) return null;
-            const shown = round ? Math.round(value).toLocaleString() : value.toFixed(1);
-            return `${value > 0 ? '+' : ''}${shown} ${unit}`;
-        };
-        const dTime = optimized.time_min != null && baseline.time_min != null
-            ? optimized.time_min - baseline.time_min : null;
-        const dFuel = optimized.fuel_estimated_kg != null && baseline.fuel_estimated_kg != null
-            ? optimized.fuel_estimated_kg - baseline.fuel_estimated_kg : null;
-        const dExp = optimized.avg_exposure != null && baseline.avg_exposure != null
-            ? optimized.avg_exposure - baseline.avg_exposure : null;
-        const t = fmt(dTime, 'min');
-        const f = fmt(dFuel, 'kg fuel', true);
-        const e = fmt(dExp, 'exp');
-        if (t) parts.push(t);
-        if (f) parts.push(f);
-        if (e) parts.push(e);
-        deltaEl.textContent = parts.length ? `Δ ${parts.join(' · ')}` : '—';
-        const better = (dTime ?? 0) <= 0 && (dExp ?? 0) <= 0;
-        deltaEl.classList.toggle('delta-good', better && parts.length > 0);
-        deltaEl.classList.toggle('delta-bad', !better && parts.length > 0);
-    }
-}
-
-export function renderMeta(meta) {
-    const status = document.getElementById('data-status');
-    if (!status) return;
-
-    const source = meta.source === 'cache' ? 'CACHED' : String(meta.source || 'UNKNOWN').toUpperCase();
-    const details = [source];
-    if (meta.scenario_title) details.push(meta.scenario_title);
-    if (meta.event_count != null) details.push(`${meta.event_count} weather events`);
-    if (meta.fetched_at) details.push(`fetched ${meta.fetched_at}`);
-    if (meta.trajectory_status) details.push(meta.trajectory_status);
-    status.textContent = details.join('  ·  ');
-}
-
-export function renderAltitudeLegend(grid) {
-    const list = document.getElementById('altitude-level-list');
-    if (!list) return;
-    list.replaceChildren();
-
-    const levels = new Map();
-    grid.forEach(point => {
-        Object.entries(point.levels || {}).forEach(([pressure, data]) => {
-            if (!data || !Number.isFinite(data.y) || !Number.isFinite(data.altitude_km)) return;
-            if (!levels.has(pressure)) levels.set(pressure, { heights: [], altitudes: [] });
-            levels.get(pressure).heights.push(data.y);
-            levels.get(pressure).altitudes.push(data.altitude_km);
-        });
-    });
-
-    [...levels.entries()]
-        .map(([pressure, data]) => ({
-            pressure,
-            height: median(data.heights),
-            altitude: median(data.altitudes),
-        }))
-        .sort((left, right) => left.height - right.height)
-        .forEach((level, index) => {
-            const color = PRESSURE_LEVEL_COLORS[index % PRESSURE_LEVEL_COLORS.length];
-            const row = document.createElement('div');
-            row.className = 'altitude-level-row';
-
-            const swatch = document.createElement('span');
-            swatch.className = 'altitude-level-swatch';
-            const hex = `#${color.toString(16).padStart(6, '0')}`;
-            swatch.style.backgroundColor = hex;
-            swatch.style.color = hex;
-
-            const pressure = document.createElement('span');
-            pressure.textContent = `${level.pressure} hPa`;
-
-            const altitude = document.createElement('span');
-            altitude.textContent = `${level.altitude.toFixed(1)} km`;
-
-            row.append(swatch, pressure, altitude);
-            list.append(row);
-        });
-}
-
-// ---------------------------------------------------------------------------
 // Weather grid — clouds only, capped instance count
 // ---------------------------------------------------------------------------
 
@@ -309,6 +206,7 @@ function renderGrid(grid, group, weatherMeshKit, updates) {
         layerHeight,
     });
     if (markers.userData.update) updates.push(markers.userData.update);
+    markers.userData.layer = 'weather';
     group.add(markers);
 }
 
@@ -357,6 +255,7 @@ function renderAltitudeLayers(grid, group, updates) {
     });
     const pillars = new THREE.LineSegments(pillarGeometry, pillarMaterial);
     pillars.renderOrder = 2;
+    pillars.userData.layer = 'altitude';
     group.add(pillars);
 
     let pillarTime = 0;
@@ -383,6 +282,7 @@ function renderAltitudeLayers(grid, group, updates) {
         });
         const outline = new THREE.LineLoop(outlineGeometry, outlineMaterial);
         outline.renderOrder = 2;
+        outline.userData.layer = 'altitude';
         group.add(outline);
 
         let t = index * 1.3;
@@ -395,6 +295,7 @@ function renderAltitudeLayers(grid, group, updates) {
         if (Number.isFinite(altitude)) {
             const label = createAltitudeLabel(`${pressure} hPa`, `${altitude.toFixed(1)} km`, color);
             label.position.set(minX + 26 + index * 78, y, minZ + 18);
+            label.userData.layer = 'altitude';
             group.add(label);
         }
     });
@@ -501,6 +402,7 @@ function renderAirports(airports, group, updates, groundSampler) {
         const marker = new THREE.Mesh(coreGeometry, coreMaterial);
         marker.position.set(airport.x, airport.y, airport.z);
         marker.userData.isAirportMarker = true;
+        marker.userData.layer = 'airports';
         marker.userData.markerRadius = 6;
         if (groundSampler) {
             const groundY = groundSampler(airport.x, airport.z);
@@ -519,6 +421,7 @@ function renderAirports(airports, group, updates, groundSampler) {
         ring.rotation.x = -Math.PI / 2;
         ring.position.copy(marker.position);
         ring.renderOrder = 5;
+        ring.userData.layer = 'airports';
         group.add(ring);
 
         const beamMaterial = new THREE.MeshBasicMaterial({
@@ -533,6 +436,7 @@ function renderAirports(airports, group, updates, groundSampler) {
         const beam = new THREE.Mesh(beamGeometry, beamMaterial);
         beam.position.copy(marker.position);
         beam.renderOrder = 1;
+        beam.userData.layer = 'airports';
         group.add(beam);
 
         const discMaterial = new THREE.MeshBasicMaterial({
@@ -546,11 +450,15 @@ function renderAirports(airports, group, updates, groundSampler) {
         const disc = new THREE.Mesh(discGeometry, discMaterial);
         disc.rotation.x = -Math.PI / 2;
         disc.renderOrder = 0;
+        disc.userData.layer = 'airports';
         group.add(disc);
 
         const code = airport.code || airport.name;
         const label = code ? createAirportLabel(String(code)) : null;
-        if (label) group.add(label);
+        if (label) {
+            label.userData.layer = 'airports';
+            group.add(label);
+        }
 
         let phase = (airport.x % 10) / 10;
         let time = 0;
@@ -647,6 +555,7 @@ function renderRoute(waypoints, color, style, group, label = 'route', groundSamp
     mesh.userData.routeLabel = label;
     mesh.userData.routeColor = color;
     mesh.userData.routeWaypoints = path;
+    mesh.userData.layer = 'routes';
     group.add(mesh);
     return mesh;
 }

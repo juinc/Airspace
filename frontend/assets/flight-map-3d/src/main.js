@@ -8,19 +8,22 @@ import { loadModel } from './loaders/modelLoader.js';
 import { createPlaneTemplate } from './objects/plane.js';
 import { createMapMesh } from './objects/mapMesh.js';
 import { loadWeatherMeshKit } from './utils/cloudFactory.js';
-import { createRouteInspector } from './utils/routeInspector.js';
+import { createRouteInspector, sceneToGeo } from './utils/routeInspector.js';
 import { applyExecutiveEnvironment } from './utils/executiveEnvironment.js';
-import { createFlightHud } from './utils/flightHud.js';
+import { createAirspaceBridge } from './utils/airspaceBridge.js';
+import { mountStandaloneUi } from './utils/standaloneUi.js';
 
 import {
     alignAirportsToMap,
     createSceneDataGroup,
     disposeSceneDataGroup,
-    renderAltitudeLegend,
-    renderMeta,
-    renderMetrics,
 } from './sceneData.js';
-import { checkBackendHealth, fetchSceneData, replanWeatherScene } from './services/routeService.js';
+import {
+    checkBackendHealth,
+    fetchSceneData,
+    replanWeatherScene,
+    setApiBaseUrl,
+} from './services/routeService.js';
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -29,11 +32,6 @@ import { checkBackendHealth, fetchSceneData, replanWeatherScene } from './servic
 const container = document.getElementById('app');
 const isMobileDevice = window.matchMedia('(max-width: 760px), (pointer: coarse)').matches;
 const modelAssetUrl = file => `${import.meta.env.BASE_URL}models/${file}`;
-
-// Gentle canvas fade-in once the first scenario is on screen.
-const bootStyle = document.createElement('style');
-bootStyle.textContent = '#app{opacity:0;transition:opacity 1s ease}body.scene-ready #app{opacity:1}';
-document.head.appendChild(bootStyle);
 
 const scene = createScene();
 const camera = createCamera();
@@ -82,53 +80,27 @@ renderer.domElement.addEventListener('wheel', cancelCameraTween, { passive: true
 // closes over them (inspector, HUD, loaders).
 // ---------------------------------------------------------------------------
 
-const scenarioSelector = document.getElementById('scenario-selector');
-const status = document.getElementById('data-status');
 const query = new URLSearchParams(window.location.search);
 
-const scenarios = new Set([
-    // Multi-airport / multi-aircraft showcase scenarios first.
-    'crossroads-storm',
-    'converge-bucharest',
-    'carpathian-siege',
-    // Single-corridor classics.
-    'storm-wall',
-    'over-the-top',
-    'low-corridor',
-    'slalom',
-    'fuel-critical',
-    'in-flight-replan',
-    'real-meteo',
-]);
-
-const SCENARIO_TITLES = {
-    'crossroads-storm': 'Storm crossroads — 3 aircraft',
-    'converge-bucharest': 'Converge on Bucharest — 4 aircraft',
-    'carpathian-siege': 'Carpathian siege — triangle flights',
-    'storm-wall': 'Storm wall',
-    'over-the-top': 'Over the top',
-    'low-corridor': 'Low corridor',
-    'slalom': 'Slalom',
-    'fuel-critical': 'Fuel critical',
-    'in-flight-replan': 'In-flight replan',
-    'real-meteo': 'Real meteo (AIFS)',
-};
-
+const SCENARIOS = [
+    { id: 'crossroads-storm', title: 'Storm crossroads — 3 aircraft' },
+    { id: 'converge-bucharest', title: 'Converge on Bucharest — 4 aircraft' },
+    { id: 'carpathian-siege', title: 'Carpathian siege — triangle flights' },
+    { id: 'storm-wall', title: 'Storm wall' },
+    { id: 'over-the-top', title: 'Over the top' },
+    { id: 'low-corridor', title: 'Low corridor' },
+    { id: 'slalom', title: 'Slalom' },
+    { id: 'fuel-critical', title: 'Fuel critical' },
+    { id: 'in-flight-replan', title: 'In-flight replan' },
+    { id: 'real-meteo', title: 'Real meteo (AIFS)' },
+    { id: 'random-storms', title: 'Random storms' },
+    { id: 'heavy-storms', title: 'Heavy storms' },
+    { id: 'clear-airspace', title: 'Clear airspace' },
+    { id: 'layered-random', title: 'Layered weather' },
+];
+const scenarioIds = new Set(SCENARIOS.map(scenario => scenario.id));
 const initialScenario = query.get('scenario') || 'crossroads-storm';
-
-// Rebuild the <select> options from the scenario set so the markup can never
-// drift from the backend's scenario list (a stale option list silently
-// yields value="" — the cause of an earlier 404).
-scenarioSelector.replaceChildren(
-    ...[...scenarios].map(key => {
-        const option = document.createElement('option');
-        option.value = key;
-        option.textContent = SCENARIO_TITLES[key] || key;
-        return option;
-    }),
-);
-scenarioSelector.value = scenarios.has(initialScenario) ? initialScenario : 'crossroads-storm';
-if (!scenarioSelector.value) scenarioSelector.value = 'crossroads-storm'; // belt and braces
+let activeScenario = scenarioIds.has(initialScenario) ? initialScenario : 'crossroads-storm';
 
 let activeDataGroup;
 let activePayload;
@@ -141,6 +113,9 @@ let mapMesh;
 let groundSampler = null;
 let requestId = 0;
 let activeScenarioController;
+let bridge;
+let lastTelemetryAt = -Infinity;
+let pendingCameraPreset;
 
 const mapPromise = loadModel(modelAssetUrl(isMobileDevice ? 'romania-mobile.glb' : 'romania.glb'));
 const planeTemplatePromise = createPlaneTemplate(
@@ -149,11 +124,7 @@ const planeTemplatePromise = createPlaneTemplate(
 const weatherKitPromise = loadWeatherMeshKit();
 
 function setStatus(text) {
-    if (status) status.textContent = text;
-    const bootStatus = document.getElementById('boot-status');
-    if (bootStatus && !document.body.classList.contains('scene-ready')) {
-        bootStatus.textContent = text;
-    }
+    bridge?.emit('status', { message: text, scenario: activeScenario });
 }
 
 function scheduleWeatherRender(payload, scenarioRequestId) {
@@ -192,13 +163,8 @@ const routeInspector = createRouteInspector({
     getDataGroup: () => activeDataGroup,
     getPayload: () => activePayload,
     scene,
-});
-
-const flightHud = createFlightHud({
-    getPlaneState: () => activeDataGroup && activeDataGroup.userData.getPlaneState
-        ? activeDataGroup.userData.getPlaneState()
-        : null,
-    getPayload: () => activePayload,
+    onSelection: payload => bridge?.emit('coordinateClick', payload),
+    onClear: () => bridge?.emit('coordinateCleared'),
 });
 
 /**
@@ -232,29 +198,39 @@ function createGroundSampler(map) {
 // Scenario loading
 // ---------------------------------------------------------------------------
 
-async function loadScenario(routeProgress = 0.35) {
+async function loadScenario(scenario = activeScenario, routeProgress) {
+    if (!scenarioIds.has(scenario)) {
+        const message = `Unknown scenario: ${scenario}`;
+        bridge?.emit('error', { message, scenario });
+        return;
+    }
+
     const currentRequestId = ++requestId;
     if (activeScenarioController) activeScenarioController.abort();
     const scenarioController = new AbortController();
     activeScenarioController = scenarioController;
-    const scenario = scenarioSelector.value;
-    if (!scenario) {
-        setStatus('No scenario selected.');
-        return;
-    }
+    activeScenario = scenario;
+    const currentProgress = Number.isFinite(routeProgress)
+        ? THREE.MathUtils.clamp(routeProgress, 0, 1)
+        : (activeDataGroup?.userData.getFlightProgress?.() ?? 0.35);
     setStatus(`Loading ${scenario}…`);
+    const queryParameters = new URLSearchParams(window.location.search);
+    queryParameters.set('scenario', scenario);
+    window.history.replaceState(null, '', `${window.location.pathname}?${queryParameters}`);
 
     try {
         const payload = await (scenario === 'in-flight-replan' && activePayload
-            ? replanWeatherScene(activePayload, routeProgress, undefined, scenarioController.signal)
-            : fetchSceneData(scenario, routeProgress, scenarioController.signal));
+            ? replanWeatherScene(activePayload, currentProgress, undefined, scenarioController.signal)
+            : fetchSceneData(scenario, currentProgress, scenarioController.signal));
         if (currentRequestId !== requestId) return;
 
-        applyScenePayload(payload, 0, false);
+        const initialProgress = scenario === 'in-flight-replan' && activePayload
+            ? 0
+            : currentProgress;
+        applyScenePayload(payload, initialProgress, false);
         scheduleWeatherRender(payload, currentRequestId);
-        const bootStatus = document.getElementById('boot-status');
-        if (bootStatus) bootStatus.textContent = 'Scenario ready — preparing terrain and aircraft…';
-        document.body.classList.add('scene-ready');
+        bridge?.emit('scenarioLoaded', createScenarioSummary(payload, scenario));
+        setStatus('Scenario data loaded — preparing terrain and aircraft…');
 
         const bounds = payload.meta && payload.meta.map_bounds;
         if (bounds) {
@@ -267,7 +243,8 @@ async function loadScenario(routeProgress = 0.35) {
                 routeAltitude,
                 (bounds.min_z + bounds.max_z) / 2,
             );
-            startCameraTween(lookAt.clone().add(cameraOffset), lookAt);
+            applyCameraPreset(pendingCameraPreset || 'overview', lookAt);
+            pendingCameraPreset = undefined;
         }
 
         // Terrain and aircraft are large/independent assets. Attach them when
@@ -286,6 +263,7 @@ async function loadScenario(routeProgress = 0.35) {
                 scene.add(mapMesh);
             } else {
                 console.warn('Romania map unavailable:', mapResult.reason);
+                bridge?.emit('error', { message: 'Romania terrain model could not be loaded.', scenario });
             }
         }
 
@@ -294,36 +272,26 @@ async function loadScenario(routeProgress = 0.35) {
         activePlaneTemplate = planeResult.status === 'fulfilled' ? planeResult.value : null;
         if (planeResult.status === 'rejected') console.warn('Aircraft model unavailable:', planeResult.reason);
         if (mapMesh || activePlaneTemplate) {
-            applyScenePayload(payload, routeProgress, false);
+            applyScenePayload(payload, initialProgress, false);
             scheduleWeatherRender(payload, currentRequestId);
         }
-        if (bootStatus) bootStatus.textContent = 'Scene ready.';
+        setStatus('Scene ready.');
 
         scheduleWeatherUpdate();
     } catch (error) {
         if (currentRequestId === requestId) {
             console.error(`Failed to load ${scenario} scenario:`, error);
-            setStatus(`Could not load ${scenario}: ${error.message}`);
+            const message = `Could not load ${scenario}: ${error.message}`;
+            setStatus(message);
+            bridge?.emit('error', { message, scenario });
         }
     } finally {
         if (activeScenarioController === scenarioController) activeScenarioController = undefined;
-        document.body.classList.add('scene-ready');
     }
 }
 
-scenarioSelector.addEventListener('change', () => {
-    window.clearTimeout(weatherUpdateTimer);
-    const routeProgress = activeDataGroup && activeDataGroup.userData.getFlightProgress
-        ? activeDataGroup.userData.getFlightProgress()
-        : 0.35;
-    const nextQuery = new URLSearchParams(window.location.search);
-    nextQuery.set('scenario', scenarioSelector.value);
-    window.history.replaceState(null, '', `${window.location.pathname}?${nextQuery}`);
-    loadScenario(routeProgress);
-});
-
 function applyScenePayload(payload, initialProgress = 0, includeWeather = true) {
-    // Clear any lingering inspection marker/panel from the previous scene.
+    // Clear a selection tied to geometry from the previous scenario.
     routeInspector.clear();
 
     const nextGroup = createSceneDataGroup(
@@ -342,12 +310,166 @@ function applyScenePayload(payload, initialProgress = 0, includeWeather = true) 
     activePayload = payload;
     scene.add(activeDataGroup);
     if (mapMesh) alignAirportsToMap(activeDataGroup, mapMesh);
-    renderAltitudeLegend(payload.grid || []);
-    renderMetrics((payload.routes && payload.routes.metrics) || {});
-    renderMeta({
-        ...payload.meta,
-        event_count: (payload.events && payload.events.length) || 0,
+}
+
+function createScenarioSummary(payload, scenario) {
+    const routes = payload.routes || {};
+    const rawFlights = Array.isArray(payload.flights) && payload.flights.length
+        ? payload.flights
+        : [{ id: 'F1', ...routes }];
+    const flights = rawFlights.map((flight, index) => ({
+        id: flight.id || `F${index + 1}`,
+        origin: flight.origin || null,
+        destination: flight.destination || null,
+        metrics: flight.metrics || (index === 0 ? routes.metrics : null),
+    }));
+    const pressureLevels = new Map();
+    for (const point of payload.grid || []) {
+        for (const [pressure, level] of Object.entries(point.levels || {})) {
+            if (!Number.isFinite(level?.altitude_km)) continue;
+            const numericPressure = Number(pressure);
+            if (!Number.isFinite(numericPressure)) continue;
+            if (!pressureLevels.has(numericPressure)) pressureLevels.set(numericPressure, []);
+            pressureLevels.get(numericPressure).push(level.altitude_km);
+        }
+    }
+
+    return {
+        scenario,
+        meta: {
+            source: payload.meta?.source || 'unknown',
+            title: payload.meta?.scenario_title || SCENARIOS.find(item => item.id === scenario)?.title || scenario,
+            fetchedAt: payload.meta?.fetched_at || null,
+            trajectoryStatus: payload.meta?.trajectory_status || null,
+            aircraftProfile: payload.meta?.routing_assumptions?.aircraft_profile || null,
+        },
+        metrics: routes.metrics || null,
+        flights,
+        pressureLevels: [...pressureLevels.entries()]
+            .map(([pressure, altitudes]) => ({
+                pressure,
+                altitudeKm: medianValue(altitudes),
+            }))
+            .sort((left, right) => left.altitudeKm - right.altitudeKm),
+        eventCount: (payload.events || []).reduce(
+            (total, event) => total + (Number.isFinite(event.cell_count) ? event.cell_count : 1),
+            0,
+        ),
+    };
+}
+
+function medianValue(values) {
+    const sorted = values.slice().sort((left, right) => left - right);
+    const middle = Math.floor(sorted.length / 2);
+    return sorted.length % 2
+        ? sorted[middle]
+        : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function applyCameraPreset(preset, lookAt) {
+    const bounds = activePayload?.meta?.map_bounds;
+    const target = lookAt || (bounds
+        ? new THREE.Vector3(
+            (bounds.min_x + bounds.max_x) / 2,
+            0,
+            (bounds.min_z + bounds.max_z) / 2,
+        )
+        : controls.target.clone());
+    const offset = preset === 'topDown'
+        ? new THREE.Vector3(0, 1150, -0.01)
+        : cameraOffset;
+    startCameraTween(target.clone().add(offset), target);
+}
+
+function setLayerVisibility(layer, visible) {
+    const validLayers = new Set(['weather', 'routes', 'airports', 'altitude']);
+    if (!validLayers.has(layer)) {
+        bridge?.emit('error', { message: `Unknown scene layer: ${layer}` });
+        return;
+    }
+    if (!activeDataGroup) return;
+    activeDataGroup.traverse(object => {
+        if (object.userData.layer === layer) object.visible = visible;
     });
+}
+
+function createTelemetry(state, route, index) {
+    if (!state?.position || !activePayload) return null;
+    const optimized = route?.optimized || [];
+    const metrics = route?.metrics?.optimized || {};
+    const profile = activePayload.meta?.routing_assumptions?.aircraft_profile || {};
+    const position = state.position;
+    let nearestWaypoint = null;
+    let nearestDistance = Infinity;
+    for (const waypoint of optimized) {
+        if (!Number.isFinite(waypoint.x) || !Number.isFinite(waypoint.z)) continue;
+        const distance = (waypoint.x - position.x) ** 2 + (waypoint.z - position.z) ** 2;
+        if (distance < nearestDistance) {
+            nearestDistance = distance;
+            nearestWaypoint = waypoint;
+        }
+    }
+
+    const progress = THREE.MathUtils.clamp(state.progress, 0, 1);
+    const cruiseSpeed = profile.cruise_speed_kmh;
+    const climbRate = profile.climb_rate_m_per_min;
+    const descentRate = profile.descent_rate_m_per_min;
+    const totalTime = metrics.time_min;
+    const totalFuel = metrics.fuel_estimated_kg;
+    const initialFuel = metrics.initial_fuel_kg;
+    let fuelRemaining = null;
+    let eta = null;
+    if (Number.isFinite(totalTime) && totalTime > 0) {
+        const cumulativeTime = nearestWaypoint?.cumulative_time_min;
+        const timeElapsed = Number.isFinite(cumulativeTime) ? cumulativeTime : totalTime * progress;
+        eta = Math.max(0, totalTime - timeElapsed);
+        if (Number.isFinite(initialFuel) && Number.isFinite(totalFuel)) {
+            fuelRemaining = Math.max(0, initialFuel - (totalFuel / totalTime) * timeElapsed);
+        }
+    }
+    const geo = sceneToGeo(position);
+    let verticalSpeed = null;
+    if (state.phase === 'CLIMB' || state.phase === 'TAKEOFF') {
+        verticalSpeed = Number.isFinite(climbRate) ? climbRate / 60 : null;
+    } else if (state.phase === 'DESCENT') {
+        verticalSpeed = Number.isFinite(descentRate) ? -descentRate / 60 : null;
+    } else if (state.phase === 'CRUISE') {
+        verticalSpeed = 0;
+    }
+    const groundSpeed = state.phase === 'LANDED'
+        ? 0
+        : Number.isFinite(cruiseSpeed) ? cruiseSpeed : null;
+
+    return {
+        flightId: route?.id || `F${index + 1}`,
+        phase: state.phase,
+        lat: Number(geo.lat.toFixed(5)),
+        lon: Number(geo.lon.toFixed(5)),
+        altitudeKm: Number(state.altitude_km.toFixed(2)),
+        groundSpeedKmH: Number.isFinite(groundSpeed) ? Number(groundSpeed.toFixed(0)) : null,
+        verticalSpeedMps: Number.isFinite(verticalSpeed) ? Number(verticalSpeed.toFixed(1)) : null,
+        progress: Number(progress.toFixed(4)),
+        exposureScore: nearestWaypoint?.exposure_score ?? null,
+        fuelRemainingKg: fuelRemaining == null ? null : Math.round(fuelRemaining),
+        etaMin: eta == null ? null : Number(eta.toFixed(1)),
+        distanceRemainingKm: Number.isFinite(metrics.distance_km)
+            ? Number((metrics.distance_km * (1 - progress)).toFixed(1))
+            : null,
+    };
+}
+
+function updateTelemetry(now) {
+    if (!bridge || !activeDataGroup || now - lastTelemetryAt < 500) return;
+    lastTelemetryAt = now;
+    const planeStates = activeDataGroup.userData.planeStates || [];
+    if (!planeStates.length) return;
+    const flights = Array.isArray(activePayload?.flights) && activePayload.flights.length
+        ? activePayload.flights
+        : [{ id: 'F1', ...(activePayload?.routes || {}) }];
+    for (let index = 0; index < planeStates.length; index++) {
+        const telemetry = createTelemetry(planeStates[index](), flights[index], index);
+        if (telemetry) bridge.emit('telemetry', telemetry);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -356,7 +478,7 @@ function applyScenePayload(payload, initialProgress = 0, includeWeather = true) 
 
 function scheduleWeatherUpdate() {
     window.clearTimeout(weatherUpdateTimer);
-    if (scenarioSelector.value !== 'in-flight-replan' || !activePayload) return;
+    if (activeScenario !== 'in-flight-replan' || !activePayload) return;
 
     const delay = 7000 + Math.random() * 8000;
     weatherUpdateTimer = window.setTimeout(runWeatherUpdate, delay);
@@ -364,7 +486,7 @@ function scheduleWeatherUpdate() {
 
 async function runWeatherUpdate() {
     const previousPayload = activePayload;
-    if (!previousPayload || scenarioSelector.value !== 'in-flight-replan') return;
+    if (!previousPayload || activeScenario !== 'in-flight-replan') return;
 
     const progress = activeDataGroup && activeDataGroup.userData.getFlightProgress
         ? activeDataGroup.userData.getFlightProgress()
@@ -375,13 +497,14 @@ async function runWeatherUpdate() {
 
     try {
         const nextPayload = await replanWeatherScene(previousPayload, progress, weatherSeed);
-        if (activePayload !== previousPayload || scenarioSelector.value !== 'in-flight-replan') return;
+        if (activePayload !== previousPayload || activeScenario !== 'in-flight-replan') return;
 
         nextPayload.meta.trajectory_status = nextPayload.weather_update.replanned
             ? `Weather update ${updateNumber}: ${nextPayload.meta.trajectory_status}`
             : `Weather update ${updateNumber}: route unchanged below drastic threshold`;
         applyScenePayload(nextPayload, nextPayload.weather_update.replanned ? 0 : progress, false);
         scheduleWeatherRender(nextPayload, requestId);
+        bridge?.emit('scenarioLoaded', createScenarioSummary(nextPayload, activeScenario));
     } catch (error) {
         console.error('Weather update failed:', error);
         setStatus(`Weather update failed: ${error.message}`);
@@ -391,24 +514,46 @@ async function runWeatherUpdate() {
 }
 
 // ---------------------------------------------------------------------------
-// Flutter bridges
+// Flutter bridge
 // ---------------------------------------------------------------------------
 
-// Flutter can push scenario changes into the WebView.
-window.addEventListener('message', event => {
-    const data = event.data;
-    if (!data || typeof data !== 'object') return;
-    if (data.type === 'airspace:scenario' && typeof data.scenario === 'string' && scenarios.has(data.scenario)) {
-        scenarioSelector.value = data.scenario;
-        scenarioSelector.dispatchEvent(new Event('change'));
+function handleBridgeCommand(command) {
+    if (command.action === 'loadScenario' && typeof command.scenario === 'string') {
+        window.clearTimeout(weatherUpdateTimer);
+        loadScenario(command.scenario, command.routeProgress);
+        return;
     }
-});
+    if (command.action === 'setCamera' && ['overview', 'topDown'].includes(command.preset)) {
+        if (activePayload) applyCameraPreset(command.preset);
+        else pendingCameraPreset = command.preset;
+        return;
+    }
+    if (command.action === 'toggleLayer'
+        && typeof command.layer === 'string'
+        && typeof command.visible === 'boolean') {
+        setLayerVisibility(command.layer, command.visible);
+        return;
+    }
+    if (command.action === 'setApiBase' && typeof command.url === 'string') {
+        try {
+            setApiBaseUrl(command.url);
+            checkBackendHealth().then(health => {
+                if (health.ok) setStatus('Backend connected.');
+                else {
+                    const message = `Backend unavailable (${health.detail}).`;
+                    setStatus(message);
+                    bridge?.emit('error', { message });
+                }
+            });
+        } catch (error) {
+            bridge?.emit('error', { message: error.message });
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Render loop
 // ---------------------------------------------------------------------------
-
-loadScenario();
 
 let lastFrameTime = performance.now();
 let frameInterval = navigator.connection && navigator.connection.saveData ? 1000 / 30 : 0;
@@ -462,7 +607,7 @@ function animate() {
     }
 
     routeInspector.update(delta);
-    flightHud.update();
+    updateTelemetry(now);
     controls.update();
     renderer.render(delta);
 }
@@ -479,3 +624,18 @@ window.addEventListener('resize', () => {
     camera.updateProjectionMatrix();
     renderer.setSize(width, height);
 });
+
+bridge = createAirspaceBridge(handleBridgeCommand);
+if (!bridge.isEmbedded()) {
+    mountStandaloneUi({
+        scenarios: SCENARIOS,
+        initialScenario: activeScenario,
+        sendCommand: command => window.AirspaceThree.receiveMessage({
+            version: 1,
+            type: 'command',
+            ...command,
+        }),
+    });
+}
+bridge.emit('ready', { scenarios: SCENARIOS, initialScenario: activeScenario });
+if (!bridge.isEmbedded()) loadScenario(activeScenario);

@@ -20,87 +20,20 @@ export function sceneToGeo(point) {
 const PICK_DRAG_THRESHOLD_PX = 6;
 const CURVE_SAMPLES = 240;
 
-const PANEL_STYLES = `
-.airspace-inspect-panel {
-    position: fixed;
-    z-index: 9999;
-    min-width: 258px;
-    max-width: 320px;
-    padding: 14px 16px 12px;
-    background: rgba(12, 19, 29, 0.9);
-    border: 1px solid rgba(227, 181, 99, 0.4);
-    border-radius: 12px;
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255,255,255,0.05);
-    backdrop-filter: blur(14px) saturate(1.2);
-    color: #e9eef4;
-    font-family: 'Inter', system-ui, sans-serif;
-    font-size: 12px;
-    line-height: 1.5;
-    font-feature-settings: 'tnum' 1;
-    pointer-events: auto;
-    animation: airspace-panel-in 0.16s ease-out;
-}
-@keyframes airspace-panel-in {
-    from { opacity: 0; transform: translateY(6px) scale(0.97); }
-    to   { opacity: 1; transform: translateY(0) scale(1); }
-}
-.airspace-inspect-panel .route-chip {
-    display: inline-block;
-    padding: 3px 11px;
-    margin-bottom: 9px;
-    border-radius: 999px;
-    font-weight: 700;
-    font-size: 10px;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: #0a0f16;
-}
-.airspace-inspect-panel .section {
-    margin-top: 9px;
-    padding-top: 7px;
-    border-top: 1px solid rgba(255, 255, 255, 0.08);
-}
-.airspace-inspect-panel .section-title {
-    font-size: 9px;
-    font-weight: 600;
-    letter-spacing: 0.22em;
-    text-transform: uppercase;
-    color: #5c7086;
-    margin-bottom: 3px;
-}
-.airspace-inspect-panel .row {
-    display: flex;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 1.5px 0;
-}
-.airspace-inspect-panel .row .key { color: #8fa3b5; }
-.airspace-inspect-panel .row .val { color: #eef3f8; font-weight: 600; }
-.airspace-inspect-panel .close {
-    position: absolute;
-    top: 8px;
-    right: 10px;
-    width: 18px;
-    height: 18px;
-    border: none;
-    background: transparent;
-    color: #5c7086;
-    font-size: 14px;
-    line-height: 18px;
-    cursor: pointer;
-    padding: 0;
-}
-.airspace-inspect-panel .close:hover { color: #e3b563; }
-`;
-
 /**
  * Click-to-inspect for flight routes. Click (not drag) any rendered route to
- * get its exact geographic coordinates, the aircraft's modeled state at that
- * point (fuel, phase), and the nearest weather cell's forecast values —
- * shown in an on-screen panel AND reported to Flutter through
- * flutter_inappwebview.callHandler plus window.postMessage.
+ * get geographic coordinates, route state, and the nearest forecast values.
+ * Flutter owns the display; this module only reports the selected scene point.
  */
-export function createRouteInspector({ camera, domElement, getDataGroup, getPayload, scene }) {
+export function createRouteInspector({
+    camera,
+    domElement,
+    getDataGroup,
+    getPayload,
+    scene,
+    onSelection,
+    onClear,
+}) {
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
     let downX = 0;
@@ -108,10 +41,6 @@ export function createRouteInspector({ camera, domElement, getDataGroup, getPayl
     let downTime = 0;
     let marker = null;
     let markerTime = 0;
-    let panel = null;
-    const listeners = [];
-
-    ensureStyles();
     domElement.addEventListener('pointerdown', event => {
         downX = event.clientX;
         downY = event.clientY;
@@ -155,8 +84,7 @@ export function createRouteInspector({ camera, domElement, getDataGroup, getPayl
         const hits = raycaster.intersectObjects(roots, true);
         if (hits.length === 0) {
             clearMarker();
-            hidePanel();
-            emit({ type: 'airspace:route-point-cleared' });
+            onClear?.();
             return;
         }
 
@@ -165,8 +93,7 @@ export function createRouteInspector({ camera, domElement, getDataGroup, getPayl
         const point = hits[0].point;
         const payload = describePoint(root, point);
         placeMarker(point, root.userData.routeColor || 0x4dd8ff);
-        showPanel(payload, event.clientX, event.clientY);
-        emit({ type: 'airspace:route-point', ...payload });
+        onSelection?.(payload);
     }
 
     function describePoint(root, point) {
@@ -234,16 +161,16 @@ export function createRouteInspector({ camera, domElement, getDataGroup, getPayl
             route: label,
             lat: Number(geo.lat.toFixed(5)),
             lon: Number(geo.lon.toFixed(5)),
-            altitude_km: Number(geo.altitude_km.toFixed(2)),
+            altitudeKm: Number(geo.altitude_km.toFixed(2)),
             x: Number(point.x.toFixed(2)),
             y: Number(point.y.toFixed(2)),
             z: Number(point.z.toFixed(2)),
-            route_progress: progress != null ? Number(progress.toFixed(4)) : null,
-            pressure_level: nearestWaypoint ? nearestWaypoint.pressure_level ?? null : null,
-            exposure_score: nearestWaypoint ? nearestWaypoint.exposure_score ?? null : null,
-            waypoint_index: nearestIndex,
+            routeProgress: progress != null ? Number(progress.toFixed(4)) : null,
+            pressureLevel: nearestWaypoint ? nearestWaypoint.pressure_level ?? null : null,
+            exposureScore: nearestWaypoint ? nearestWaypoint.exposure_score ?? null : null,
+            waypointIndex: nearestIndex,
             phase,
-            fuel_remaining_kg: fuel != null ? Math.round(fuel) : null,
+            fuelRemainingKg: fuel != null ? Math.round(fuel) : null,
             weather,
         };
     }
@@ -291,81 +218,6 @@ export function createRouteInspector({ camera, domElement, getDataGroup, getPayl
             cape: cell.cape ?? null,
         };
     }
-    // --- On-screen panel ---------------------------------------------------
-
-    function ensureStyles() {
-        if (document.getElementById('airspace-inspect-styles')) return;
-        const style = document.createElement('style');
-        style.id = 'airspace-inspect-styles';
-        style.textContent = PANEL_STYLES;
-        document.head.appendChild(style);
-    }
-
-    function ensurePanel() {
-        if (panel) return panel;
-        panel = document.createElement('div');
-        panel.className = 'airspace-inspect-panel';
-        panel.style.display = 'none';
-        document.body.appendChild(panel);
-        return panel;
-    }
-
-    function showPanel(payload, clickX, clickY) {
-        const element = ensurePanel();
-
-        const colorHex = `#${(payload.route === 'optimized' ? 0xe3b563
-            : payload.route === 'baseline' ? 0x5f7f9b : 0x8a97a5)
-            .toString(16).padStart(6, '0')}`;
-
-        const row = (key, value) =>
-            `<div class="row"><span class="key">${key}</span><span class="val">${value}</span></div>`;
-        const fmt = (value, suffix = '') => (value == null ? '—' : `${value}${suffix}`);
-
-        const w = payload.weather || {};
-        element.innerHTML = `
-            <button class="close" title="Close">×</button>
-            <span class="route-chip" style="background:${colorHex}">${payload.route}</span>
-            ${row('Phase', fmt(payload.phase ? payload.phase.toUpperCase() : null))}
-            ${row('Latitude', `${payload.lat.toFixed(4)}°`)}
-            ${row('Longitude', `${payload.lon.toFixed(4)}°`)}
-            ${row('Altitude', `${payload.altitude_km.toFixed(2)} km`)}
-            ${row('Progress', payload.route_progress != null ? `${(payload.route_progress * 100).toFixed(1)}%` : '—')}
-            ${row('Level', payload.pressure_level != null ? `${payload.pressure_level} hPa` : '—')}
-            ${row('Exposure', fmt(payload.exposure_score, ' / 100'))}
-            ${payload.fuel_remaining_kg != null ? `
-            <div class="section">
-                <div class="section-title">Aircraft</div>
-                ${row('Fuel remaining', `${payload.fuel_remaining_kg.toLocaleString()} kg`)}
-            </div>` : ''}
-            <div class="section">
-                <div class="section-title">Nearest forecast cell</div>
-                ${row('Temperature', w.temperature != null ? `${w.temperature} °C` : '—')}
-                ${row('Wind', w.wind_speed != null ? `${w.wind_speed} km/h ${w.wind_direction != null ? `@ ${w.wind_direction}°` : ''}` : '—')}
-                ${row('Humidity', w.relative_humidity != null ? `${w.relative_humidity} %` : '—')}
-                ${row('Cloud cover', w.cloud_cover != null ? `${w.cloud_cover} %` : '—')}
-                ${row('Precipitation', w.precipitation != null ? `${w.precipitation} mm` : '—')}
-                ${row('CAPE', w.cape != null ? `${w.cape} J/kg` : '—')}
-            </div>
-        `;
-
-        element.querySelector('.close').addEventListener('click', () => {
-            hidePanel();
-            clearMarker();
-        });
-
-        // Position near the click, clamped inside the viewport.
-        element.style.display = 'block';
-        const panelRect = element.getBoundingClientRect();
-        const left = Math.min(Math.max(12, clickX + 16), window.innerWidth - panelRect.width - 12);
-        const top = Math.min(Math.max(12, clickY - panelRect.height - 16), window.innerHeight - panelRect.height - 12);
-        element.style.left = `${left}px`;
-        element.style.top = `${top}px`;
-    }
-
-    function hidePanel() {
-        if (panel) panel.style.display = 'none';
-    }
-
     // --- Scene marker ------------------------------------------------------
 
     function placeMarker(point, color) {
@@ -407,37 +259,7 @@ export function createRouteInspector({ camera, domElement, getDataGroup, getPayl
         marker = null;
     }
 
-    // --- Flutter bridge ----------------------------------------------------
-
-    function emit(payload) {
-        try {
-            if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
-                window.flutter_inappwebview.callHandler(
-                    payload.type === 'airspace:route-point' ? 'onRoutePointSelected' : 'onRoutePointCleared',
-                    payload,
-                );
-            }
-        } catch (error) {
-            console.warn('routeInspector: Flutter handler unavailable', error);
-        }
-        try {
-            window.postMessage(payload, '*');
-            if (window.parent && window.parent !== window) window.parent.postMessage(payload, '*');
-        } catch (error) {
-            console.warn('routeInspector: postMessage failed', error);
-        }
-        listeners.forEach(listener => listener(payload));
-    }
-
     return {
-        onPick(listener) {
-            listeners.push(listener);
-            return () => {
-                const index = listeners.indexOf(listener);
-                if (index >= 0) listeners.splice(index, 1);
-            };
-        },
-
         update(delta) {
             if (!marker) return;
             markerTime += delta;
@@ -449,7 +271,7 @@ export function createRouteInspector({ camera, domElement, getDataGroup, getPayl
 
         clear() {
             clearMarker();
-            hidePanel();
+            onClear?.();
         },
     };
 }

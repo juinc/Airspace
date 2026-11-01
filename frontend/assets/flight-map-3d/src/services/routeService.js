@@ -1,6 +1,29 @@
-const API_BASE_URL =
-    (typeof window !== 'undefined' && window.AIRSPACE_API_BASE) || 'http://localhost:8000';
+function defaultApiBaseUrl() {
+    if (typeof window !== 'undefined' && window.AIRSPACE_API_BASE) {
+        return window.AIRSPACE_API_BASE;
+    }
+    if (typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent)) {
+        return 'http://10.0.2.2:8000';
+    }
+    return 'http://localhost:8000';
+}
+
+let apiBaseUrl = defaultApiBaseUrl();
 const REQUEST_TIMEOUT_MS = 8000;
+
+export function setApiBaseUrl(value) {
+    let parsed;
+    try {
+        parsed = new URL(value);
+    } catch {
+        throw new Error('Backend URL must be an absolute HTTP(S) URL.');
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password
+        || parsed.search || parsed.hash) {
+        throw new Error('Backend URL must be HTTP(S), without credentials, query, or fragment.');
+    }
+    apiBaseUrl = parsed.href.replace(/\/+$/, '');
+}
 
 async function fetchJson(url, options = {}) {
     const { signal: externalSignal, ...requestOptions } = options;
@@ -33,7 +56,7 @@ async function fetchJson(url, options = {}) {
 
 export async function checkBackendHealth() {
     try {
-        await fetchJson(`${API_BASE_URL}/health`);
+        await fetchJson(`${apiBaseUrl}/health`);
         return { ok: true };
     } catch (error) {
         return { ok: false, detail: error.message };
@@ -45,11 +68,11 @@ export async function fetchSceneData(scenario, routeProgress = 0.35, signal) {
     if (scenario === 'in-flight-replan') {
         query.set('route_progress', String(routeProgress));
     }
-    return fetchJson(`${API_BASE_URL}/test-scenarios/${encodeURIComponent(scenario)}?${query}`, { signal });
+    return fetchJson(`${apiBaseUrl}/test-scenarios/${encodeURIComponent(scenario)}?${query}`, { signal });
 }
 
 export async function replanWeatherScene(previousPayload, routeProgress, weatherSeed, signal) {
-    return fetchJson(`${API_BASE_URL}/replan`, {
+    return fetchJson(`${apiBaseUrl}/replan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal,

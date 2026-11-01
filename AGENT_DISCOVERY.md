@@ -4,49 +4,95 @@ Discovery date: 2026-11-01
 
 ## Project shape
 
-Airspace is a weather-aware flight-route visualization. The backend owns weather acquisition, grid normalization, geographic-to-scene coordinates, aircraft assumptions, and A* route planning. Flutter is intended to be the app shell. Three.js renders the map, routes, weather, airports, and aircraft inside a bundled Vite build.
+Airspace is a weather-aware route visualization. The FastAPI backend owns
+weather acquisition and normalization, grid coordinates, aircraft assumptions,
+A* route planning, route metrics, and replanning. Flutter owns the application
+interface. The bundled Three.js scene renders backend payloads and reports
+route-coordinate picks; it does not plan routes.
 
 ## Runtime and dependency map
 
-| Area | Entry points and dependencies | Responsibility |
+| Area | Entry points | Responsibility |
 |---|---|---|
-| FastAPI | `backend/main.py`; FastAPI, Pydantic, Requests | HTTP routes, request models, CORS, response assembly, scenario cache |
-| Weather | `backend/weather/client.py`, `normalize.py`, `events.py`, `cache.py`; Requests, NumPy, SciPy | Open-Meteo AIFS fetch/cache, null-aware exposure score, weather event detection |
-| Grid and coordinates | `backend/grid/builder.py`, `romania_mask.py`, `coordinates.py` | Grid construction, Romania mask, one authoritative scene-coordinate transform |
-| Route optimizer | `backend/optimizer/astar.py`, `stub_trajectory.py` | Aircraft profile, 3D A* costs, route phases, metrics and replanning |
-| Synthetic fixtures | `backend/synthetic_scenarios.py` | Deterministic weather grids, demo scenarios, synthetic route plans |
-| Flutter shell | `frontend/lib/main.dart`, `three_view*.dart`, `utils/overlay_3js.dart`, `utils/overlay_elements/*` | App frame and early route/status panels; this implementation is not yet connected to the scene payload |
-| 3D app | `frontend/assets/flight-map-3d/src/main.js`, `sceneData.js`, `core/*`, `objects/*`, `utils/*` | Vite entry, Three.js renderer and controls, terrain/assets, routes, aircraft, weather meshes, route picking |
-| Bundled scene | `frontend/assets/flight-map-3d/dist/build/` | Vite production output included by Flutter through `pubspec.yaml` |
+| FastAPI | `backend/main.py` | API/CORS, live scene assembly, scenario LRU cache |
+| Weather | `backend/weather/{client,normalize,events,cache}.py` | Open-Meteo AIFS, cache, exposure scores, event detection |
+| Grid and coordinates | `backend/grid/{builder,romania_mask,coordinates}.py` | 0.5° sampling, Romania mask, shared scene coordinates |
+| Optimizer | `backend/optimizer/{astar,stub_trajectory}.py` | 3D A*, modeled flight phases, metrics and replanning |
+| Synthetic scenes | `backend/synthetic_scenarios.py` | Seeded weather fields, synthetic routes and multi-flight scenarios |
+| Flutter UI | `frontend/lib/utils/overlay_3js.dart`, `overlay_elements/*` | Scenario, camera/layer, status, metrics, telemetry, coordinate UI |
+| Flutter protocol | `frontend/lib/airspace_protocol.dart`, `three_view*.dart` | Versioned v1 message parsing, commands, platform transports |
+| Three.js | `frontend/assets/flight-map-3d/src/main.js`, `sceneData.js`, `core/*`, `objects/*`, `utils/*` | Canvas renderer, backend scene geometry, picking and telemetry |
+| Packaged scene | `frontend/assets/flight-map-3d/dist/build/` | Vite output bundled by Flutter |
 
-No `AGENTS.md` file was found in the repository. The root `README.md` describes a 0.25°/288-point grid, while the live backend defaults to a wider 0.5° grid. The current backend tests also contain assumptions that no longer match the implementation.
+Flutter loads the packaged scene rather than a Vite development server.
+Android/iOS use `webview_flutter`; Windows uses `webview_windows` and a
+loopback server for Flutter assets; Flutter web uses an iframe. See
+[BRIDGE_PROTOCOL.md](./frontend/assets/flight-map-3d/BRIDGE_PROTOCOL.md) for
+message fields and startup order.
 
-## API and scene data contract
+## API and data flow
 
-| Route | Method | Consumer / behavior |
-|---|---|---|
-| `/health` | GET | Liveness |
-| `/weather-grid` | POST | Grid and forecast metadata |
-| `/weather-events` | POST | Detected weather clusters |
-| `/test-scene-data` | POST | Full live weather scene and A* routes |
-| `/optimize` | POST | Route pair and metrics |
-| `/replan` | POST | Weather-change assessment and updated route |
-| `/test-scenarios/{scenario}` | GET | Synthetic or live scene payloads |
+The scene payload includes `meta`, `grid`, `events`, `airports`, and `routes`;
+multi-flight payloads also include `flights`. Scene coordinates and all route
+geometry come from the backend. The Three.js route inspector maps a picked
+scene position back to a coordinate and selects the nearest backend weather
+sample. Flutter displays the resulting v1 event and does not fabricate
+telemetry or weather.
 
-The scene payload is `meta`, `grid`, `events`, `airports`, and `routes`; optional multi-flight scenarios add `flights`. Coordinates and route geometry are backend-owned. The current Vite client loads `/test-scenarios/{scenario}` from `routeService.js`. The current Flutter app does not provide scenario selection or consume `onScenarioLoaded` data. The current scene page independently owns its scenario selector, status, route metrics, altitude legend, loading UI, and aircraft HUD. It also has an untyped one-way `postMessage` scenario shim, while the route inspector injects its own DOM panel.
+The scenario list is sent by the scene in `ready.scenarios`. Registered
+synthetic scenarios include `crossroads-storm`, `converge-bucharest`,
+`carpathian-siege`, `random-storms`, `heavy-storms`, `layered-random`,
+`clear-airspace`, `storm-wall`, `over-the-top`, `low-corridor`, `slalom`,
+`fuel-critical`, and `in-flight-replan`. `drastic-weather-change` is a backend
+compatibility alias. `real-meteo` calls Open-Meteo and reports provider errors;
+it has no synthetic fallback.
 
-## Baseline findings
+Live and synthetic full-country grids use a 0.5° envelope over Romania,
+typically about 136 horizontal cells and five pressure levels. Synthetic
+weather responses are cached in a bounded 16-entry LRU with deep-copied
+responses; different cache misses can build concurrently. The default
+multi-flight scenario is prewarmed from FastAPI lifespan startup. Concurrent
+requests for the same uncached scenario share one build; different scenario
+keys can still build concurrently.
 
-- Flutter panels use a fixed-width `Row` and 290 px side panels; the narrow-screen layout is not responsive. The panel toggles animate, but the controls contain placeholder airport data (JFK/LHR, etc.) unrelated to the backend's Romanian routes.
-- `ThreeView` loads a development server (`localhost:5173` or `10.0.2.2:5173`) instead of the bundled Vite scene. The web implementation also hard-codes the dev server.
-- The Vite page still owns nearly all visible interface controls, contrary to the requested Flutter UI contract.
-- The required `random-storms`, `heavy-storms`, and `layered-random` synthetic IDs are absent from the backend scenario registry and grid generator. `clear-airspace` is deliberately rejected by the scenario endpoint even though the generator and tests use it.
-- `real-meteo` depends on an external provider; a truthful demo fallback is needed if the app contract must keep that scenario selectable while offline.
-- The 3D route inspector has a raycaster plus an HTML panel. The status HUD is also created in Three.js and currently mixes scene-derived coordinates with backend route metrics.
-- Weather uses grouped `InstancedMesh` clusters, with a 500-cell cap. The renderer currently enables antialiasing at all device tiers. OrbitControls already supports touch gestures, but panning is disabled.
-- Scenario responses use a bounded insertion-order dictionary rather than an LRU. Synchronous FastAPI handlers run in FastAPI's worker thread pool; route search should remain backend-only.
+## Verified behavior and known constraints
 
-## Verification constraints
+- Flutter owns the controls and panels; the Three.js page is a fullscreen
+  canvas with picking, telemetry and layer visibility commands.
+- `clear-airspace` and the requested random/heavy/layered scenarios are
+  registered. `drastic-weather-change` aliases the existing in-flight replan.
+- Per-event dot rendering was removed; weather is represented by the
+  instanced mesh spans. Airport markers, routes, altitude references and route
+  picking remain separate scene layers.
+- Backend CORS covers local development origins, Android WebView asset origins
+  and the opaque `null` origin used by some packaged WebViews. Android cleartext
+  HTTP is enabled for local development; production should use HTTPS.
+- Backend URL is configurable in Flutter. `10.0.2.2` is only the Android
+  emulator host; physical devices require a reachable host/LAN address.
+- `real-meteo` depends on the external provider and can fail with provider
+  errors/rate limits. It is not replaced with generated data.
+- Aircraft performance values are modeled assumptions, not POH/dispatch or
+  live aircraft data. This prototype is not for flight planning.
+- No time/altitude slider exists; none is shown.
 
-Node and the Vite dependencies are available. A Python 3.12 backend virtual environment is present. The system Flutter SDK is not on PATH, so Dart analysis, Flutter builds, and native device rendering cannot be confirmed here. The first pytest attempt also exposed that the runner's default temporary directory is outside the writable workspace; rerun pytest with a workspace-local `--basetemp`.
+## Verification
 
+The Vite production build passes, with one chunk above Vite's 500 KB warning
+threshold. The backend suite passes (89 tests). The frontend benchmark uses
+Playwright Chromium mobile emulation against the packaged build and a local
+FastAPI instance; it records scene-ready time, scenario switches, API payload
+sizes, console errors, and FPS. The latest run measured 15.5 s to full scene
+ready, 1.36 s to scenario data, 1.6–5.4 s for scenario switches, and 7 FPS;
+there were no browser errors. Its headless FPS is a software-renderer result,
+not a physical-device measurement, and the production renderer stats hook
+returned null. On the dev build, renderer info was 64 draw calls, 563,120
+triangles, 39 geometries, 12 textures and DPR 1.
+
+The mobile terrain model is 3.38 MB and the mobile aircraft model is 0.21 MB;
+the desktop terrain model is 28.57 MB. These are source asset sizes, not
+resident GPU memory.
+
+Node and the Vite dependencies are available. Python 3.12 and the backend
+virtual environment are available. Flutter/Dart is not on PATH, so Flutter
+formatting, analysis, widget tests, native builds and device rendering could
+not be run here.

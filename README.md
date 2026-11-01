@@ -96,9 +96,10 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`. The scenario selector defaults to **"A lot
-more storms"** (see [Synthetic Weather Scenarios](#synthetic-weather-scenarios)
-below).
+Run `npm run dev -- --host 127.0.0.1` and open
+`http://127.0.0.1:5173`. The standalone scene is a renderer; Flutter owns
+scenario selection and status panels. For a standalone scenario, add a query
+parameter such as `?scenario=storm-wall`.
 
 ### 3. Flutter app (production path)
 
@@ -128,13 +129,14 @@ will keep serving the old build otherwise.
 | Origin                  | Craiova (LCCR) — 44.3180°N, 23.8886°E                                                                                   |
 | Destination             | Cluj-Napoca (LRCL) — 46.783389°N, 23.684194°E                                                                           |
 | Straight-line distance  | ~275 km                                                                                                                 |
-| Grid bounds             | lat 43.75°–47.50°, lon 22.75°–27.00°                                                                                    |
-| Grid resolution         | 0.25° steps → 16 × 18 = 288 horizontal points                                                                           |
-| Pressure levels         | 400, 300, 250, 200 hPa (≈7.2 / 9.2 / 10.4 / 11.8 km)                                                                    |
-| Total grid nodes        | 288 × 4 = 1,152                                                                                                         |
+| Grid envelope           | lat 43.5°–48.5°, lon 19.5°–30.0°; weather points are masked to Romania                                               |
+| Grid resolution         | 0.5° steps → 242 rectangular candidates, about 136 after the country mask                                              |
+| Pressure levels         | 500, 400, 300, 250, 200 hPa                                                                                             |
+| Total grid nodes        | About 136 × 5 = 680 for a full synthetic scene                                                                          |
 | Forecast cadence        | 6-hour steps (native AIFS resolution — UI must show actual forecast-valid timestamps, never implies hourly granularity) |
-| Cache TTL               | 6 hours, matched to forecast step                                                                                       |
+| Weather cache TTL       | 6 hours, matched to forecast step                                                                                       |
 | Default cruise altitude | 250 hPa (10.4 km)                                                                                                       |
+| Vertical exaggeration   | 4×                                                                                                                       |
 | CJ3 max cruise speed    | 416 kt / 770.4 km/h                                                                                                     |
 
 ## Aircraft model and route separation
@@ -163,7 +165,7 @@ scene coordinate system — the frontend never performs geographic math.
 
 - **Origin (0,0,0):** 45.625°N, 24.875°E (center of the active grid)
 - **X** = east/west offset (km)
-- **Y** = altitude, with **20x vertical exaggeration** (otherwise the ~4.6 km
+- **Y** = altitude, with **4x vertical exaggeration** (otherwise the ~4.6 km
   altitude span is invisible against the ~400 km horizontal span)
 - **Z** = north/south offset (km)
 - 1 scene unit = 1 km
@@ -171,9 +173,10 @@ scene coordinate system — the frontend never performs geographic math.
 Longitude distance is scaled by `cos(origin_latitude)` since meters-per-degree
 longitude shrinks with latitude; meters-per-degree latitude (111.32 km) is
 constant everywhere. This conversion lives in exactly one place —
-`grid/coordinates.py` — and is applied identically to grid cells, storm event
-centroids, route waypoints, and airport markers. No other module and no
-frontend code performs this conversion independently.
+`grid/coordinates.py` — and is applied to grid cells, storm event centroids,
+route waypoints, and airport markers. Three.js uses those backend coordinates
+for rendering and converts a picked scene point back to geographic coordinates
+only for route inspection; the frontend does not plan or replan routes.
 
 ---
 
@@ -203,9 +206,9 @@ circulation.
 
 A\* searches the 3D grid (26-directional connectivity: 8 same-layer + 9 above
 Heuristic: straight-line distance ÷ cruise speed (admissible — never
-overestimates true remaining cost). The baseline/direct route is a separate,
-non-weather-aware straight line at default cruise altitude, used purely as a
-comparison reference.
+overestimates true remaining cost). The baseline is a separate straight
+airport-to-airport reference with modeled takeoff, climb, cruise, and landing
+phases; it is not used for pathfinding.
 
 ---
 
@@ -221,19 +224,27 @@ Omit overrides to use the locked corridor config above.
 | `/weather-grid`   | POST   | Fetch/build the weather grid for given (or default) bounds       |
 | `/weather-events` | POST   | Detect storm clusters; `test_mode:true` limits to the 2 airports |
 | `/optimize`       | POST   | Real A\*-powered route optimization;                             |
+| `/test-scene-data`| POST   | Full live weather scene, routes, airports, and metadata          |
+| `/replan`         | POST   | Reassess route against updated weather and replan when needed     |
+| `/test-scenarios/{scenario}` | GET | Synthetic demo scene or external `real-meteo` forecast  |
 
 ### Synthetic weather scenarios
 
-The `/test-scenarios/*` endpoints return **fully synthetic, reproducible**
-JSON — they do not call Open-Meteo and are intended for demoing and testing
-how the optimizer and scene respond to different weather conditions on
-demand, without depending on whatever the real atmosphere happens to be
-doing on demo day. The Three.js scene's scenario selector defaults to **"A
-lot more storms"** specifically because it's the most visually compelling
-proof of the core claim: that the optimized route visibly bends around
-weather. Any payload returned by these endpoints — synthetic or real — must
-follow the identical response contract described below; the frontend cannot
-tell (and does not need to tell) the difference.
+Synthetic IDs include `crossroads-storm`, `converge-bucharest`,
+`carpathian-siege`, `random-storms`, `heavy-storms`, `layered-random`,
+`clear-airspace`, `storm-wall`, `over-the-top`, `low-corridor`, `slalom`,
+`fuel-critical`, and `in-flight-replan`. They do not call Open-Meteo and are
+deterministic for a given seed. `drastic-weather-change` remains a compatible
+alias for the in-flight scenario. `real-meteo` is not synthetic: it depends on
+the external Open-Meteo service and reports provider errors rather than
+pretending generated data is live weather.
+
+The Flutter shell owns scenario selection, camera and layer controls, status,
+metrics, telemetry, and route inspection. It loads the packaged scene from
+`assets/flight-map-3d/dist/build/` and communicates through the versioned
+protocol in [BRIDGE_PROTOCOL.md](./frontend/assets/flight-map-3d/BRIDGE_PROTOCOL.md).
+The backend remains the sole owner of weather normalization and route
+planning.
 
 ---
 
@@ -254,10 +265,19 @@ routes:   { baseline: [ {lat,lon,x,y,z,exposure_score}, ... ],
             optimized: [ same shape ],
             metrics: { baseline: {distance_km,time_min,avg_exposure},
                        optimized: {...} } }
+flights:  optional multi-flight list; each item contains id, routes, and metrics
 ```
 
-Any field may be `null` if the forecast omitted that variable. The frontend
-must skip rendering that element rather than defaulting it to a "safe" value.
+Synthetic scenario events may be compact type/cell-count summaries; live
+weather events include cluster details. Any forecast field may be `null` when
+the provider omits it. The scene and Flutter UI must preserve nulls instead of
+substituting invented weather or aircraft data.
+
+The scene emits telemetry values that are based on the backend's modeled
+aircraft profile and route metrics, not live aircraft sensors. On physical
+phones, configure a reachable backend URL in Flutter (or with
+`--dart-define=AIRSPACE_API_BASE=...`); the Android emulator default
+`10.0.2.2` does not work on a physical device.
 
 ---
 
@@ -266,7 +286,7 @@ must skip rendering that element rather than defaulting it to a "safe" value.
 ```sh
 cd backend
 pip install -r requirements-dev.txt
-pytest -v
+python -m pytest -v --basetemp=.pytest-temp
 ```
 
 All tests run against mocked network calls and temporary cache paths — no

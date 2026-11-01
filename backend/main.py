@@ -1,4 +1,9 @@
 from datetime import datetime, timezone
+from collections import OrderedDict
+from contextlib import asynccontextmanager
+from copy import deepcopy
+import logging
+from threading import Condition, RLock, Thread
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
@@ -57,14 +62,27 @@ from synthetic_scenarios import (
 
 PRESSURE_LEVELS = sorted(set(_CLIENT_PRESSURE_LEVELS) | {500})
 
-app = FastAPI(title="Airspace Weather Backend")
+@asynccontextmanager
+async def lifespan(_app):
+    Thread(
+        target=_prewarm_default_scenario_cache,
+        name="scenario-cache-prewarm",
+        daemon=True,
+    ).start()
+    yield
+
+
+app = FastAPI(title="Airspace Weather Backend", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "http://10.0.2.2:5173",
+        "null",
+        "https://appassets.androidplatform.net",
     ],
+    allow_origin_regex=r"^http://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type"],
 )
@@ -104,19 +122,42 @@ SCENE_CACHE_VERSION = "full-aifs-scene-v3"
 # (scenario, mode, seed, progress, aircraft) — recomputing A* for a repeat
 # visit is pure waste. Bounded, oldest-entry eviction.
 # ---------------------------------------------------------------------------
-_SCENARIO_CACHE = {}
+_SCENARIO_CACHE = OrderedDict()
 _SCENARIO_CACHE_MAX = 16
+_SCENARIO_CACHE_LOCK = RLock()
+_SCENARIO_CACHE_CONDITION = Condition(_SCENARIO_CACHE_LOCK)
+_SCENARIO_BUILDS = set()
+logger = logging.getLogger(__name__)
 
 
 def _cached_scenario(key, builder):
-    cached = _SCENARIO_CACHE.get(key)
-    if cached is not None:
-        return cached
-    payload = builder()
-    if len(_SCENARIO_CACHE) >= _SCENARIO_CACHE_MAX:
-        _SCENARIO_CACHE.pop(next(iter(_SCENARIO_CACHE)))
-    _SCENARIO_CACHE[key] = payload
-    return payload
+    with _SCENARIO_CACHE_CONDITION:
+        while True:
+            cached = _SCENARIO_CACHE.get(key)
+            if cached is not None:
+                _SCENARIO_CACHE.move_to_end(key)
+                return deepcopy(cached)
+            if key not in _SCENARIO_BUILDS:
+                _SCENARIO_BUILDS.add(key)
+                break
+            _SCENARIO_CACHE_CONDITION.wait()
+
+    try:
+        payload = builder()
+    except Exception:
+        with _SCENARIO_CACHE_CONDITION:
+            _SCENARIO_BUILDS.discard(key)
+            _SCENARIO_CACHE_CONDITION.notify_all()
+        raise
+
+    with _SCENARIO_CACHE_CONDITION:
+        _SCENARIO_CACHE[key] = payload
+        _SCENARIO_CACHE.move_to_end(key)
+        while len(_SCENARIO_CACHE) > _SCENARIO_CACHE_MAX:
+            _SCENARIO_CACHE.popitem(last=False)
+        _SCENARIO_BUILDS.discard(key)
+        _SCENARIO_CACHE_CONDITION.notify_all()
+        return deepcopy(payload)
 
 
 class AircraftProfileRequest(BaseModel):
@@ -634,7 +675,7 @@ def test_scenario(
         meta["scenario_title"] = "Open-Meteo forecast"
         return payload
 
-    if scenario == "in-flight-replan":
+    if scenario in {"in-flight-replan", "drastic-weather-change"}:
         if not 0 <= route_progress <= 1:
             raise HTTPException(status_code=400, detail="route_progress must be between 0 and 1")
 
@@ -664,7 +705,7 @@ def test_scenario(
 
         return _cached_scenario(cache_key, build_replan)
 
-    if scenario not in SCENARIO_TITLES or scenario == "clear-airspace":
+    if scenario not in SCENARIO_TITLES:
         raise HTTPException(status_code=404, detail=f"Unknown scenario: {scenario}")
 
     def build_legacy():
@@ -809,3 +850,10 @@ def _events_for_grid(grid):
                 )
             )
     return events
+
+
+def _prewarm_default_scenario_cache():
+    try:
+        test_scenario("crossroads-storm")
+    except (HTTPException, ValueError):
+        logger.exception("Could not prewarm the default synthetic scenario")

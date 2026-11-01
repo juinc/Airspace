@@ -48,6 +48,10 @@ AIRPORTS = {
 }
 
 SCENARIO_TITLES = {
+    "random-storms": "Random storms across Romania",
+    "heavy-storms": "Heavy storm systems across Romania",
+    "layered-random": "Layered weather with vertical routing",
+    "drastic-weather-change": "Sudden weather change ahead of the aircraft",
     "storm-wall": "Full-altitude storm wall with a single lateral gap",
     "over-the-top": "Low-level storms across the corridor — climb over the top",
     "low-corridor": "High-level storms across the corridor — descend underneath",
@@ -58,6 +62,10 @@ SCENARIO_TITLES = {
 }
 
 SCENARIO_SEEDS = {
+    "random-storms": 1707,
+    "heavy-storms": 1808,
+    "layered-random": 1909,
+    "drastic-weather-change": 2001,
     "storm-wall": 1101,
     "over-the-top": 1202,
     "low-corridor": 1303,
@@ -184,8 +192,51 @@ def _multi_cell_plan(scenario, lat: float, lon: float):
     return "clear", None
 
 
-def _cell_plan(scenario, progress, lateral):
-    if scenario == "storm-wall":
+def _cell_plan(scenario, progress, lateral, rng):
+    if scenario == "random-storms":
+        draw = rng.random()
+        if draw < 0.12:
+            return "severe_storm", None
+        if draw < 0.25:
+            return "thunderstorm", None
+        if draw < 0.40:
+            return "rain", None
+    elif scenario == "heavy-storms":
+        draw = rng.random()
+        if draw < 0.40:
+            return "severe_storm", None
+        if draw < 0.72:
+            return "thunderstorm", None
+        if draw < 0.94:
+            return "rain", None
+    elif scenario == "layered-random":
+        if 0.32 <= progress <= 0.68 and abs(lateral) <= 0.8:
+            return "clear", {
+                500: "clear",
+                400: "clear",
+                300: "severe_storm",
+                250: "severe_storm",
+                200: "clear",
+            }
+        levels = {}
+        for pressure in PRESSURE_LEVELS:
+            draw = rng.random()
+            levels[pressure] = (
+                "thunderstorm" if draw < 0.08
+                else "rain" if draw < 0.16
+                else "clear"
+            )
+        return "clear", levels
+    elif scenario == "drastic-weather-change":
+        draw = rng.random()
+        if draw < 0.18:
+            return "clear", None
+        if draw < 0.45:
+            return "rain", None
+        if draw < 0.70:
+            return "thunderstorm", None
+        return "severe_storm", None
+    elif scenario == "storm-wall":
         if 0.42 <= progress <= 0.58 and not (0.30 <= lateral <= 0.55):
             return "severe_storm", None
     elif scenario == "over-the-top":
@@ -273,7 +324,7 @@ def build_synthetic_grid(scenario, config, weather_seed=0):
             )
         else:
             progress, lateral = _route_frame(point["lat"], point["lon"])
-            surface_type, layer_overrides = _cell_plan(scenario, progress, lateral)
+            surface_type, layer_overrides = _cell_plan(scenario, progress, lateral, rng)
         _apply_point_weather(point, surface_type, rng, layer_overrides)
 
     return attach_scene_coordinates(points, PRESSURE_LEVELS)
