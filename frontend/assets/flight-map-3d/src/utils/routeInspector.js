@@ -1,10 +1,12 @@
 import * as THREE from 'three';
 
-// Must mirror grid/coordinates.py exactly.
+// Must mirror grid/coordinates.py exactly — the backend bakes every scene y
+// with VERTICAL_EXAGGERATION = 4. Dividing by anything else misreports
+// altitude in the inspector panel.
 const GRID_ORIGIN_LAT = 45.625;
 const GRID_ORIGIN_LON = 24.875;
 const EARTH_M_PER_DEG_LAT = 111320;
-const VERTICAL_EXAGGERATION = 6;
+const VERTICAL_EXAGGERATION = 4;
 
 export function sceneToGeo(point) {
     const metersPerDegLon = EARTH_M_PER_DEG_LAT * Math.cos((GRID_ORIGIN_LAT * Math.PI) / 180);
@@ -176,17 +178,21 @@ export function createRouteInspector({ camera, domElement, getDataGroup, getPayl
 
         let progress = null;
         if (curve) {
-            // Nearest sampled t along the curve -> route progress fraction.
+            // Cache the arc-length-spaced samples on the route root: the
+            // route doesn't change between clicks, so we compute the
+            // expensive spacing ONCE instead of 241 getPointAt calls per click.
+            let samples = root.userData.spacedPoints;
+            if (!samples || samples.length !== CURVE_SAMPLES + 1) {
+                samples = curve.getSpacedPoints(CURVE_SAMPLES);
+                root.userData.spacedPoints = samples;
+            }
             let bestDistance = Infinity;
             let bestT = 0;
-            const sample = new THREE.Vector3();
             for (let i = 0; i <= CURVE_SAMPLES; i++) {
-                const t = i / CURVE_SAMPLES;
-                curve.getPointAt(t, sample);
-                const distance = sample.distanceToSquared(point);
+                const distance = samples[i].distanceToSquared(point);
                 if (distance < bestDistance) {
                     bestDistance = distance;
-                    bestT = t;
+                    bestT = i / CURVE_SAMPLES;
                 }
             }
             progress = bestT;

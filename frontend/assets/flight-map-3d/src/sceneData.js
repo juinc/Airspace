@@ -5,7 +5,7 @@ import { buildWeatherClusters } from './utils/weatherClusters.js';
 import { createWeatherSpanMarkers } from './utils/weatherSpanMarkers.js';
 import { pointsFromGrid } from './utils/weatherPointAdapters.js';
 
-const PRESSURE_LEVEL_COLORS = [0x6fd3e8, 0x7fd6a4, 0xe3b563, 0xe2836f];
+const PRESSURE_LEVEL_COLORS = [0x6fd3e8, 0x7fd6a4, 0xe3b563, 0xe2836f, 0xb48fe0];
 
 const ROUTE_COLORS = {
     baseline: 0x4dd8ff,    // cyan dashed
@@ -32,7 +32,8 @@ export function createSceneDataGroup(payload, planeTemplate, initialProgress = 0
     const routes = payload.routes || {};
     const baselineMesh = renderRoute(routes.baseline, ROUTE_COLORS.baseline, PathStyle.DASHED, group, 'baseline', groundSampler);
     if (baselineMesh && baselineMesh.userData.update) updates.push(baselineMesh.userData.update);
-    if (payload.weather_update && payload.replanned) {
+    // replanned lives INSIDE weather_update, not on the payload root.
+    if (payload.weather_update && payload.weather_update.replanned) {
         renderRoute(routes.previous_optimized, ROUTE_COLORS.previous, PathStyle.DASHED, group, 'previous_optimized', groundSampler);
     }
     const optimizedMesh = renderRoute(routes.optimized, ROUTE_COLORS.optimized, PathStyle.SOLID, group, 'optimized', groundSampler);
@@ -574,42 +575,6 @@ function createAirportLabel(text) {
     return label;
 }
 
-    // ---------------------------------------------------------------------------
-    // Legacy compatibility: FlightCurve factory + aliases.
-    // Returns a THREE.Group/Line (works with group.add(...), new FlightCurve(...),
-    // and plain FlightCurve(...)) with helper props attached.
-    // ---------------------------------------------------------------------------
-    export function FlightCurve(waypoints, style = 'baseline') {
-        // Accept ({ points | waypoints, style }) as a single options object too.
-        if (waypoints && !Array.isArray(waypoints) && (waypoints.points || waypoints.waypoints)) {
-            style = waypoints.style ?? waypoints.pathStyle ?? style;
-            waypoints = waypoints.points || waypoints.waypoints;
-        }
-        const s = typeof style === 'string'
-            ? (PathStyle[style] || PathStyle.baseline)
-            : (style || PathStyle.baseline);
-
-        let object = s.dashed
-            ? createDashedLine(waypoints, s.color, s.dashSize, s.gapSize, s.opacity)
-            : createSolidTube(waypoints, s.color, s.radius || TUBE_RADIUS);
-        if (!object) object = new THREE.Group();
-
-        const pts = toVector3s(waypoints);
-        if (pts.length >= 2) {
-            object.curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
-        }
-        object.waypoints = waypoints || [];
-        object.getPoints = (n = 200) => (object.curve ? object.curve.getPoints(n) : pts);
-        object.dispose = () => disposeDeep(object);
-        return object;
-    }
-
-    FlightCurve.from = (waypoints, style) => FlightCurve(waypoints, style);
-    FlightCurve.PathStyle = PathStyle;
-
-    export const createFlightCurve = FlightCurve;
-    export const buildFlightCurve = FlightCurve;
-
 // ---------------------------------------------------------------------------
 // Routes — raw backend paths, terrain-snapped, tagged for the inspector
 // ---------------------------------------------------------------------------
@@ -638,7 +603,6 @@ function renderRoute(waypoints, color, style, group, label = 'route', groundSamp
         path,
         color,
         style,
-        taken: style === PathStyle.SOLID,
     });
     const mesh = curve.createMesh();
     mesh.userData.flightCurve = curve;

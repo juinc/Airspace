@@ -87,6 +87,10 @@ const HUD_STYLES = `
 }
 `;
 
+// 10 Hz is plenty for a status panel — writing 15 DOM nodes 60x per second
+// was pure waste. -Infinity forces the very first frame to render.
+const REFRESH_INTERVAL_MS = 100;
+
 /**
  * Live aircraft status panel — metric units throughout. Every value derives
  * from backend data: route metrics (time, distance, fuel plan), the
@@ -134,7 +138,6 @@ export function createFlightHud({ getPlaneState, getPayload }) {
         exposure: hud.querySelector('.exposure'),
         fuel: hud.querySelector('.fuel'),
         fuelBar: hud.querySelector('.fuel-bar .fill'),
-                fuelBar: hud.querySelector('.fuel-bar .fill'),
         burn: hud.querySelector('.burn'),
         progressLabel: hud.querySelector('.progress-label'),
         progressBar: hud.querySelector('.bar.progress .fill'),
@@ -150,6 +153,8 @@ export function createFlightHud({ getPlaneState, getPayload }) {
         'LANDED': '#93a7b4',
     };
 
+    let lastRefresh = -Infinity;
+
     function ensureStyles() {
         if (document.getElementById('airspace-hud-styles')) return;
         const style = document.createElement('style');
@@ -159,12 +164,20 @@ export function createFlightHud({ getPlaneState, getPayload }) {
     }
 
     function update() {
+        // Fast path: nothing to show — hide (once) and bail without any
+        // further work. This runs every frame, so keep it allocation-free.
         const state = getPlaneState && getPlaneState();
         const payload = getPayload && getPayload();
         if (!state || !payload) {
-            hud.style.display = 'none';
+            if (hud.style.display !== 'none') hud.style.display = 'none';
             return;
         }
+
+        // Throttle all DOM writes to REFRESH_INTERVAL_MS.
+        const now = performance.now();
+        if (now - lastRefresh < REFRESH_INTERVAL_MS) return;
+        lastRefresh = now;
+
         hud.style.display = 'block';
 
         const metrics = (payload.routes && payload.routes.metrics && payload.routes.metrics.optimized) || {};

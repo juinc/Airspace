@@ -10,14 +10,20 @@ import * as THREE from 'three';
  * - Per-instance color = weather darkness (category-derived, blurred across
  *   all six neighbors), so light cloud gradually darkens into rain cells.
  * - Cells spawn with a staggered ease-out-back pop sweeping along the
- *   corridor, then keep a gentle per-instance bob so the sky stays alive.
+ *   corridor.
  * - Storm clusters carry a lightning core that idles dim and fires random
  *   bright flashes, like a real charged cell.
+ *
+ * PERFORMANCE: after the spawn sweep completes, cloud instance matrices are
+ * written ONE final time and then frozen — no per-frame matrix churn for
+ * thousands of instances. Only the (few) lightning cores keep animating.
  */
 
 // How dark each category renders before neighbor blur (0 = white, 1 = slate).
 const CATEGORY_DARKNESS = { low: 0.0, moderate: 0.06, elevated: 0.42, high: 0.78 };
 const DARK_CLOUD = new THREE.Color(0x39445a);
+
+const SPAWN_DURATION = 0.9;
 
 export function createWeatherSpanMarkers(clusters, weatherMeshKit, options = {}) {
     const {
@@ -136,18 +142,37 @@ export function createWeatherSpanMarkers(clusters, weatherMeshKit, options = {})
         };
     }
 
+    // Last moment any cloud instance is still animating its spawn.
+    let spawnEnd = 0;
+    cloudAnimated.forEach(({ states }) => states.forEach(s => {
+        spawnEnd = Math.max(spawnEnd, s.delay + SPAWN_DURATION);
+    }));
+
     let time = 0;
+    let cloudsFrozen = false;
+
     group.userData.update = delta => {
         time += delta;
 
-        cloudAnimated.forEach(({ mesh, states }) => {
-            states.forEach((s, i) => {
-                const spawn = THREE.MathUtils.clamp((time - s.delay) / 0.9, 0, 1);
-                writeInstance(dummy, mesh, i, s, time, easeOutBack(spawn));
+        // Clouds: animate only during the spawn sweep, then write the final
+        // matrices once and stop touching them. This is the difference between
+        // ~4500 matrix writes per frame and zero.
+        if (!cloudsFrozen) {
+            const spawning = time < spawnEnd;
+            const frameTime = spawning ? time : spawnEnd;
+            cloudAnimated.forEach(({ mesh, states }) => {
+                states.forEach((s, i) => {
+                    const spawn = THREE.MathUtils.clamp(
+                        (frameTime - s.delay) / SPAWN_DURATION, 0, 1,
+                    );
+                    writeInstance(dummy, mesh, i, s, frameTime, easeOutBack(spawn));
+                });
+                mesh.instanceMatrix.needsUpdate = true;
             });
-            mesh.instanceMatrix.needsUpdate = true;
-        });
+            if (!spawning) cloudsFrozen = true;
+        }
 
+        // Lightning: few instances, cheap — keep it alive every frame.
         lightningAnimated.forEach(({ mesh, states }) => {
             const spawn = easeOutBack(THREE.MathUtils.clamp(time / 1.5, 0, 1));
             states.forEach((s, i) => {

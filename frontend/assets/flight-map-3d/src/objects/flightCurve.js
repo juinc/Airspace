@@ -1,22 +1,12 @@
 import * as THREE from 'three';
 
-// ---------------------------------------------------------------------------
-// Style table. sceneData.js imports PathStyle directly; uppercase keys are
-// aliases so PathStyle.BASELINE and PathStyle.baseline both resolve.
-// ---------------------------------------------------------------------------
+// Style constants used by sceneData.js: PathStyle.SOLID / PathStyle.DASHED.
 export const PathStyle = {
-    optimized: { color: 0xffb347, dashed: false, tube: true, radius: 1.6, opacity: 1.0 },
-    baseline:  { color: 0x4dd8ff, dashed: true,  tube: false, dashSize: 7, gapSize: 5, opacity: 0.9 },
-    previous:  { color: 0x7a8ea0, dashed: true,  tube: false, dashSize: 7, gapSize: 5, opacity: 0.7 },
+    SOLID: { dashed: false, radius: 1.6, opacity: 1.0 },
+    DASHED: { dashed: true, dashSize: 7, gapSize: 5, opacity: 0.9 },
 };
-PathStyle.OPTIMIZED = PathStyle.optimized;
-PathStyle.BASELINE = PathStyle.baseline;
-PathStyle.PREVIOUS = PathStyle.previous;
 
-const TUBE_RADIUS = 1.6;
-const DASH_SIZE = 7;
-const GAP_SIZE = 5;
-const NODE_MARKER_SIZE = 2.0;
+const GLOW_OPACITY = 0.15;
 
 export function disposeDeep(root) {
     if (!root) return;
@@ -40,111 +30,66 @@ function toVector3s(waypoints) {
         });
 }
 
-function createSolidTube(waypoints, color, radius = TUBE_RADIUS) {
-    const pts = toVector3s(waypoints);
-    if (pts.length < 2) return null;
-    const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
-    const segments = Math.min(600, Math.max(32, pts.length * 8));
-
-    const tube = new THREE.Mesh(
-        new THREE.TubeGeometry(curve, segments, radius, 10, false),
-        new THREE.MeshBasicMaterial({ color }),
-    );
-    const glow = new THREE.Mesh(
-        new THREE.TubeGeometry(curve, Math.min(400, segments), radius * 2.2, 10, false),
-        new THREE.MeshBasicMaterial({
-            color,
-            transparent: true,
-            opacity: 0.15,
-            blending: THREE.AdditiveBlending,
-            depthWrite: false,
-        }),
-    );
-    const group = new THREE.Group();
-    group.add(glow);
-    group.add(tube);
-    return group;
-}
-
-function createDashedLine(waypoints, color, dashSize = DASH_SIZE, gapSize = GAP_SIZE, opacity = 0.9) {
-    const pts = toVector3s(waypoints);
-    if (pts.length < 2) return null;
-    const line = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints(pts),
-        new THREE.LineDashedMaterial({
-            color,
-            dashSize,
-            gapSize,
-            transparent: true,
-            opacity,
-        }),
-    );
-    line.computeLineDistances();
-    return line;
-}
-
-function createNodeMarkers(waypoints, color) {
-    const nodes = (waypoints || []).filter((w) => w?.node && Number.isFinite(w.x));
-    if (nodes.length === 0) return null;
-    const group = new THREE.Group();
-    const geometry = new THREE.BoxGeometry(NODE_MARKER_SIZE, NODE_MARKER_SIZE, NODE_MARKER_SIZE);
-    const material = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85 });
-    for (const node of nodes) {
-        const marker = new THREE.Mesh(geometry, material);
-        marker.position.set(node.x, node.y ?? node.altitude_km * 4 ?? 0, node.z);
-        group.add(marker);
-    }
-    return group;
-}
-
 /**
- * Legacy generic builder: accepts either a style key
- * ('optimized' | 'baseline' | 'previous') or a style object from PathStyle.
+ * FlightCurve — wraps a waypoint list in a smooth Catmull-Rom curve and can
+ * build its mesh. The backend now sends densely-sampled waypoints (max 8 km
+ * apart), so drawing through every point yields a smooth flight arc with no
+ * elbows by construction.
  */
-export function createRoutePath(waypoints, style = 'baseline') {
-    const s = typeof style === 'string'
-        ? (PathStyle[style] || PathStyle.baseline)
-        : (style || PathStyle.baseline);
-    if (s.dashed) {
-        return createDashedLine(waypoints, s.color, s.dashSize, s.gapSize, s.opacity);
+export class FlightCurve {
+    constructor(waypoints, style = PathStyle.DASHED, color = 0x4dd8ff) {
+        this.waypoints = waypoints || [];
+        this.style = style || PathStyle.DASHED;
+        this.color = color;
+        this.points = toVector3s(this.waypoints);
+        this.curve = this.points.length >= 2
+            ? new THREE.CatmullRomCurve3(this.points, false, 'centripetal')
+            : null;
     }
-    return createSolidTube(waypoints, s.color, s.radius || TUBE_RADIUS);
+
+    static fromPath({ path, waypoints, color = 0x4dd8ff, style = PathStyle.DASHED } = {}) {
+        return new FlightCurve(path || waypoints || [], style, color);
+    }
+
+    createMesh() {
+        const group = new THREE.Group();
+        if (!this.curve || this.points.length < 2) return group;
+
+        if (this.style.dashed) {
+            const line = new THREE.Line(
+                new THREE.BufferGeometry().setFromPoints(this.points),
+                new THREE.LineDashedMaterial({
+                    color: this.color,
+                    dashSize: this.style.dashSize ?? 7,
+                    gapSize: this.style.gapSize ?? 5,
+                    transparent: true,
+                    opacity: this.style.opacity ?? 0.9,
+                }),
+            );
+            line.computeLineDistances();
+            group.add(line);
+        } else {
+            const radius = this.style.radius ?? 1.6;
+            const segments = Math.min(600, Math.max(64, this.points.length * 8));
+            const tube = new THREE.Mesh(
+                new THREE.TubeGeometry(this.curve, segments, radius, 10, false),
+                new THREE.MeshBasicMaterial({ color: this.color }),
+            );
+            const glow = new THREE.Mesh(
+                new THREE.TubeGeometry(this.curve, Math.min(400, segments), radius * 2.2, 10, false),
+                new THREE.MeshBasicMaterial({
+                    color: this.color,
+                    transparent: true,
+                    opacity: GLOW_OPACITY,
+                    blending: THREE.AdditiveBlending,
+                    depthWrite: false,
+                }),
+            );
+            group.add(glow);
+            group.add(tube);
+        }
+        return group;
+    }
 }
 
-/**
- * Builds every route from the payload: solid amber tube for the optimized
- * route, cyan dashed line + node markers for the baseline, gray dashed for
- * the previous route after a replan.
- */
-export function createRouteGroup(routes = {}) {
-    const group = new THREE.Group();
-    group.name = 'routes';
-
-    if (routes.previous_optimized?.length > 1) {
-        const previous = createDashedLine(
-            routes.previous_optimized,
-            PathStyle.previous.color,
-            PathStyle.previous.dashSize,
-            PathStyle.previous.gapSize,
-            PathStyle.previous.opacity,
-        );
-        if (previous) group.add(previous);
-    }
-    if (routes.baseline?.length > 1) {
-        const baseline = createDashedLine(
-            routes.baseline,
-            PathStyle.baseline.color,
-            PathStyle.baseline.dashSize,
-            PathStyle.baseline.gapSize,
-            PathStyle.baseline.opacity,
-        );
-        if (baseline) group.add(baseline);
-    }
-    if (routes.optimized?.length > 1) {
-        const optimized = createSolidTube(routes.optimized, PathStyle.optimized.color);
-        if (optimized) group.add(optimized);
-        const markers = createNodeMarkers(routes.optimized, PathStyle.baseline.color);
-        if (markers) group.add(markers);
-    }
-    return group;
-}
+export default FlightCurve;

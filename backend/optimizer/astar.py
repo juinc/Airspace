@@ -1,11 +1,17 @@
 import heapq
 import math
 import statistics
+from bisect import bisect_left
 from dataclasses import dataclass, asdict
 from itertools import count
 from typing import Optional
 
-from grid.coordinates import latlon_to_scene_xz, altitude_to_scene_y
+from grid.coordinates import (
+    latlon_to_scene_xz,
+    altitude_to_scene_y,
+    resolve_altitude_m,
+    VERTICAL_EXAGGERATION,
+)
 
 # Default aircraft assumptions — a generic narrowbody jet.
 # Simulation parameters, NOT aircraft-specific performance data.
@@ -26,14 +32,28 @@ WEATHER_WEIGHTS = {
     "lower-exposure": 5.0,
 }
 
-CLIMB_GRADIENT_KM_PER_KM = 14.0    # was 12 — perceived angle ~16° with 4x exaggeration
-DESCENT_GRADIENT_KM_PER_KM = 16.0  # was 14
-CLIMB_DISTANCE_CAP = 0.40          # was 0.35 — longer runways of sky to climb through
-DESCENT_DISTANCE_CAP = 0.40
-SAMPLE_SPACING_KM = 8.0           # dense resampling -> smooth rendered curve
-GROUND_ROLL_KM = 1.5              # flat runway roll before rotation
-PHASE_EASE_FRACTION = 0.20        # 20% ease in/out, 60% constant-rate
+# Used only when a pressure level has no usable altitude data anywhere in
+# the grid — standard ISA altitudes, in meters.
+FALLBACK_ALTITUDE_M = {
+    500: 5890.0,
+    400: 7180.0,
+    300: 9160.0,
+    250: 10350.0,
+    200: 11780.0,
+}
+
+# ---------------------------------------------------------------------------
+# Vertical profile geometry — ONE continuous, densely-sampled shape.
+# ---------------------------------------------------------------------------
+CLIMB_GRADIENT_KM_PER_KM = 14.0    # horizontal km flown per km of altitude gained
+DESCENT_GRADIENT_KM_PER_KM = 16.0  # descents glide farther than climbs
+CLIMB_DISTANCE_CAP = 0.40          # climb may use at most 40% of the route
+DESCENT_DISTANCE_CAP = 0.40        # >= 20% of the route is guaranteed cruise
+SAMPLE_SPACING_KM = 8.0            # dense resampling -> smooth rendered curve
+GROUND_ROLL_KM = 1.5               # flat runway roll before rotation
+PHASE_EASE_FRACTION = 0.20         # 20% ease in/out, 60% constant-rate
 MERGE_TOLERANCE_KM = 0.4
+
 
 @dataclass(frozen=True)
 class AircraftProfile:
@@ -82,7 +102,9 @@ class AircraftProfile:
     @property
     def effective_fuel_burn_kg_per_hour(self) -> float:
         """Heavier aircraft burn more fuel per hour. Clamped linear model."""
-        return self.fuel_burn_kg_per_hour * min(2.0, max(0.5, self.weight_kg / self.reference_weight_kg))
+        return self.fuel_burn_kg_per_hour * min(
+            2.0, max(0.5, self.weight_kg / self.reference_weight_kg)
+        )
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -316,7 +338,80 @@ def _route_waypoint(node, lat=None, lon=None):
 
 
 # ---------------------------------------------------------------------------
-# Takeoff / landing phase construction — FMS-style
+# Spatial index for nearest-cell lookups
+# ---------------------------------------------------------------------------
+
+class _BucketIndex:
+    """
+    Uniform x/z bucket grid for fast nearest-entry queries.
+
+    Replaces the previous full O(n) scan per query. With ~900 grid points
+    and ~100 route waypoints per request, that was ~500k+ distance
+    computations per scene build — now each query touches only its own
+    bucket and the immediate neighbors.
+    """
+
+    def __init__(self, entries, bucket_size):
+        # entries: iterable of (x, z, payload)
+        self.bucket_size = max(float(bucket_size), 1e-6)
+        self.buckets = {}
+        for x, z, payload in entries:
+            key = self._key(x, z)
+            if key not in self.buckets:
+                self.buckets[key] = []
+            self.buckets[key].append((x, z, payload))
+
+    def _key(self, x, z):
+        return (math.floor(x / self.bucket_size), math.floor(z / self.bucket_size))
+
+    def nearest(self, x, z):
+        """Return the payload of the nearest entry, or None when empty."""
+        if not self.buckets:
+            return None
+        bx, bz = self._key(x, z)
+        # Expand the search ring until we find any entry, then scan one ring
+        # beyond to guarantee correctness across bucket boundaries.
+        for radius in range(0, 64):
+            if not self._ring_has_entries(bx, bz, radius):
+                continue
+            search_radius = radius + 1
+            best_payload = None
+            best_distance = float("inf")
+            for cx in range(bx - search_radius, bx + search_radius + 1):
+                for cz in range(bz - search_radius, bz + search_radius + 1):
+                    for entry_x, entry_z, payload in self.buckets.get((cx, cz), ()):
+                        distance = (entry_x - x) ** 2 + (entry_z - z) ** 2
+                        if distance < best_distance:
+                            best_distance = distance
+                            best_payload = payload
+            return best_payload
+        return None
+
+    def _ring_has_entries(self, bx, bz, radius):
+        if radius == 0:
+            return (bx, bz) in self.buckets
+        for cx in (bx - radius, bx + radius):
+            for cz in range(bz - radius, bz + radius + 1):
+                if (cx, cz) in self.buckets:
+                    return True
+        for cz in (bz - radius, bz + radius):
+            for cx in range(bx - radius + 1, bx + radius):
+                if (cx, cz) in self.buckets:
+                    return True
+        return False
+
+
+def _bucket_size_for(entries):
+    """One bucket per ~sqrt(n) divisions of the span — balanced occupancy."""
+    xs = [x for x, _, _ in entries]
+    zs = [z for _, z, _ in entries]
+    span_x = max(xs) - min(xs) if xs else 1.0
+    span_z = max(zs) - min(zs) if zs else 1.0
+    return max(span_x, span_z) / max(1, int(math.sqrt(len(entries))))
+
+
+# ---------------------------------------------------------------------------
+# Exposure lookup for phase waypoints
 # ---------------------------------------------------------------------------
 
 def _surface_exposure_lookup(grid_points):
@@ -325,12 +420,15 @@ def _surface_exposure_lookup(grid_points):
     AIFS provides no data below the lowest pressure level, so phase
     waypoints use the LOWEST available forecast level — the closest data
     to that altitude. Never fabricated, never zero.
+
+    Returns a _BucketIndex (or None when the grid has nothing usable) so
+    per-waypoint nearest-cell queries are near O(1) instead of O(grid).
     """
     try:
         lowest_level = _pressure_levels(grid_points)[0]
-    except ValueError:
-        return []
-    lookup = []
+    except (ValueError, TypeError, IndexError):
+        return None
+    entries = []
     for point in grid_points:
         data = _level_data(point, lowest_level)
         if not data:
@@ -338,50 +436,22 @@ def _surface_exposure_lookup(grid_points):
         x, z = point.get("x"), point.get("z")
         if x is None or z is None:
             x, z = latlon_to_scene_xz(point["lat"], point["lon"])
-        lookup.append((float(x), float(z), data.get("exposure_score")))
-    return lookup
+        entries.append((float(x), float(z), data.get("exposure_score")))
+
+    if not entries:
+        return None
+    return _BucketIndex(entries, _bucket_size_for(entries))
 
 
 def _nearest_surface_exposure(lookup, x, z):
-    nearest = None
-    nearest_distance = float("inf")
-    for cell_x, cell_z, exposure in lookup:
-        distance = (cell_x - x) ** 2 + (cell_z - z) ** 2
-        if distance < nearest_distance:
-            nearest_distance = distance
-            nearest = exposure
-    return nearest
+    if lookup is None:
+        return None
+    return lookup.nearest(x, z)
 
 
-def _phase_waypoint(lat, lon, x, z, altitude_km, exposure, phase):
-    return {
-        "lat": round(lat, 5),
-        "lon": round(lon, 5),
-        "x": x,
-        "z": z,
-        "y": altitude_to_scene_y(altitude_km * 1000),
-        "altitude_km": round(altitude_km, 3),
-        "pressure_level": None,
-        "exposure_score": exposure,
-        "phase": phase,
-    }
-
-
-def _smoothstep(u):
-    if u <= 0:
-        return 0.0
-    if u >= 1:
-        return 1.0
-    return u * u * (3 - 2 * u)
-
-
-def _phase_gradient(profile, rate_m_per_min, bounds):
-    """km horizontal per km vertical, from cruise speed vs vertical rate."""
-    rate_kmh = rate_m_per_min * 0.06
-    if rate_kmh <= 1e-9:
-        return bounds[1]
-    return max(bounds[0], min(bounds[1], profile.cruise_speed_kmh / rate_kmh))
-
+# ---------------------------------------------------------------------------
+# Continuous vertical profile
+# ---------------------------------------------------------------------------
 
 def _phase_altitude_fraction(u: float, ease: float = PHASE_EASE_FRACTION) -> float:
     """
@@ -400,6 +470,7 @@ def _phase_altitude_fraction(u: float, ease: float = PHASE_EASE_FRACTION) -> flo
         return 1.0 - slope * (1.0 - u) * (1.0 - u) / (2.0 * ease)
     return slope * (u - ease / 2.0)
 
+
 def _profile_waypoint(lat, lon, x, z, altitude_km, exposure, phase):
     return {
         "lat": round(lat, 5),
@@ -408,10 +479,11 @@ def _profile_waypoint(lat, lon, x, z, altitude_km, exposure, phase):
         "z": round(z, 3),
         "altitude_km": round(altitude_km, 3),
         "y": round(altitude_to_scene_y(altitude_km * 1000), 3),
-        "surface_exposure": exposure,
+        "exposure_score": exposure,
         "phase": phase,
         "pressure_level": None,
     }
+
 
 def _polyline_points(route, origin, destination):
     """Airport -> A* nodes -> airport, as one polyline with altitudes."""
@@ -424,14 +496,14 @@ def _polyline_points(route, origin, destination):
     for node in route:
         points.append({
             "lat": node["lat"], "lon": node["lon"],
-            "x": node["x"], "z": node["z"],
-            "altitude_km": node.get("altitude_km") or 0.0,
+            "x": node["x"], "z": node["z"], "altitude_km": node.get("altitude_km") or 0.0,
         })
     points.append({
         "lat": destination["lat"], "lon": destination["lon"],
         "x": dest_x, "z": dest_z, "altitude_km": 0.0,
     })
     return points
+
 
 def _cumulative_distances(points):
     dists = [0.0]
@@ -442,133 +514,33 @@ def _cumulative_distances(points):
         ))
     return dists
 
+
 def _interp_at(points, dists, s):
-    """Linear interpolation of (lat, lon, x, z, altitude_km) at distance s."""
+    """Linear interpolation of (lat, lon, x, z, altitude_km) at distance s.
+
+    Binary search over the cumulative distances — the previous linear scan
+    made route resampling O(n^2) overall (n_samples * n_segments).
+    """
     if s <= 0.0:
         p = points[0]
         return p["lat"], p["lon"], p["x"], p["z"], p["altitude_km"]
     if s >= dists[-1]:
         p = points[-1]
         return p["lat"], p["lon"], p["x"], p["z"], p["altitude_km"]
-    for i in range(len(dists) - 1):
-        if dists[i] <= s <= dists[i + 1]:
-            span = dists[i + 1] - dists[i]
-            t = (s - dists[i]) / span if span > 1e-9 else 0.0
-            a, b = points[i], points[i + 1]
-            return (
-                a["lat"] + (b["lat"] - a["lat"]) * t,
-                a["lon"] + (b["lon"] - a["lon"]) * t,
-                a["x"] + (b["x"] - a["x"]) * t,
-                a["z"] + (b["z"] - a["z"]) * t,
-                a["altitude_km"] + (b["altitude_km"] - a["altitude_km"]) * t,
-            )
-    p = points[-1]
-    return p["lat"], p["lon"], p["x"], p["z"], p["altitude_km"]
 
-
-def _build_takeoff(origin, cruise_route, profile, lookup):
-    """
-    Ground roll at the airport, rotation, then a constant-rate climb that
-    tops out EXACTLY at the first A* node within reach. On short corridors
-    the climb distance is capped at CLIMB_ROUTE_FRACTION of the corridor and
-    the gradient simply becomes shallower (thrust-reduced climb).
-    Returns (samples, target_index).
-    """
-    origin_x, origin_z = latlon_to_scene_xz(origin["lat"], origin["lon"])
-    first_alt = cruise_route[0]["altitude_km"]
-    gradient = _phase_gradient(
-        profile, profile.effective_climb_rate_m_per_min, CLIMB_GRADIENT_BOUNDS
+    i = bisect_left(dists, s) - 1
+    if i < 0:
+        i = 0
+    span = dists[i + 1] - dists[i]
+    t = (s - dists[i]) / span if span > 1e-9 else 0.0
+    a, b = points[i], points[i + 1]
+    return (
+        a["lat"] + (b["lat"] - a["lat"]) * t,
+        a["lon"] + (b["lon"] - a["lon"]) * t,
+        a["x"] + (b["x"] - a["x"]) * t,
+        a["z"] + (b["z"] - a["z"]) * t,
+        a["altitude_km"] + (b["altitude_km"] - a["altitude_km"]) * t,
     )
-    corridor_km = math.hypot(
-        cruise_route[-1]["x"] - origin_x,
-        cruise_route[-1]["z"] - origin_z,
-    )
-    climb_dist = min(
-        max(1.0, first_alt * gradient),
-        max(1.0, corridor_km * CLIMB_ROUTE_FRACTION),
-    )
-
-    target_index = len(cruise_route) - 1
-    for index, waypoint in enumerate(cruise_route):
-        if math.hypot(waypoint["x"] - origin_x, waypoint["z"] - origin_z) >= climb_dist:
-            target_index = index
-            break
-    target = cruise_route[target_index]
-    target_alt = target["altitude_km"]
-
-    total_km = math.hypot(target["x"] - origin_x, target["z"] - origin_z)
-    if total_km <= 1e-6:
-        return [], 0
-    roll_fraction = min(0.4, GROUND_ROLL_KM / total_km)
-
-    samples = []
-    for i in range(0, PHASE_SAMPLES + 1):   # t=0 included: the airport itself
-        t = i / PHASE_SAMPLES
-        u = 0.0 if t <= roll_fraction else (t - roll_fraction) / (1 - roll_fraction)
-        lat = origin["lat"] + (target["lat"] - origin["lat"]) * t
-        lon = origin["lon"] + (target["lon"] - origin["lon"]) * t
-        x = origin_x + (target["x"] - origin_x) * t
-        z = origin_z + (target["z"] - origin_z) * t
-        altitude_km = target_alt * _phase_altitude_fraction(u)
-        samples.append(_phase_waypoint(
-            lat, lon, x, z, altitude_km,
-            _nearest_surface_exposure(lookup, x, z),
-            "takeoff",
-        ))
-    # Drop the final sample: it coincides with the target node, whose own
-    # waypoint (with exposure/level metadata) closes the phase.
-    return samples[:-1], target_index
-
-
-def _build_landing(destination, cruise_route, profile, lookup):
-    """
-    Top-of-descent selection, FMS-style: walk BACKWARD from the destination
-    until the route has enough horizontal distance for a clean glide, then
-    descend from that node with a constant-rate profile — gentle push-over
-    at the top, flare to zero slope at touchdown on the airport. The descent
-    distance is capped at DESCENT_ROUTE_FRACTION of the corridor.
-    Returns (samples, source_index).
-    """
-    dest_x, dest_z = latlon_to_scene_xz(destination["lat"], destination["lon"])
-    source_alt = cruise_route[-1]["altitude_km"]
-    gradient = _phase_gradient(
-        profile, profile.effective_descent_rate_m_per_min, DESCENT_GRADIENT_BOUNDS
-    )
-    corridor_km = math.hypot(
-        dest_x - cruise_route[0]["x"],
-        dest_z - cruise_route[0]["z"],
-    )
-    descent_dist = min(
-        max(1.0, source_alt * gradient),
-        max(1.0, corridor_km * DESCENT_ROUTE_FRACTION),
-    )
-
-    source_index = 0
-    for index in range(len(cruise_route) - 1, -1, -1):
-        waypoint = cruise_route[index]
-        if math.hypot(waypoint["x"] - dest_x, waypoint["z"] - dest_z) >= descent_dist:
-            source_index = index
-            break
-    source = cruise_route[source_index]
-
-    total_km = math.hypot(dest_x - source["x"], dest_z - source["z"])
-    if total_km <= 1e-6:
-        return [], len(cruise_route) - 1
-
-    samples = []
-    for i in range(1, PHASE_SAMPLES + 1):
-        t = i / PHASE_SAMPLES
-        lat = source["lat"] + (destination["lat"] - source["lat"]) * t
-        lon = source["lon"] + (destination["lon"] - source["lon"]) * t
-        x = source["x"] + (dest_x - source["x"]) * t
-        z = source["z"] + (dest_z - source["z"]) * t
-        altitude_km = source_alt * _phase_altitude_fraction(1 - t)
-        samples.append(_phase_waypoint(
-            lat, lon, x, z, altitude_km,
-            _nearest_surface_exposure(lookup, x, z),
-            "landing",
-        ))
-    return samples, source_index
 
 
 def extend_with_flight_phases(route, origin, destination, profile, grid_points,
@@ -630,7 +602,7 @@ def extend_with_flight_phases(route, origin, destination, profile, grid_points,
         if include_landing and descent_dist > 0.0 and s > total_km - descent_dist:
             u = (total_km - s) / descent_dist
             alt = min(alt, descent_bottom_alt * _phase_altitude_fraction(u))
-        return alt
+        return max(0.0, alt)
 
     def phase_at(s):
         if include_takeoff and climb_dist > 0.0 and s < climb_dist * 0.999:
@@ -657,8 +629,8 @@ def extend_with_flight_phases(route, origin, destination, profile, grid_points,
         node["altitude_km"] = round(altitude_at(s), 3)
         node["y"] = round(altitude_to_scene_y(node["altitude_km"] * 1000), 3)
         node["phase"] = phase_at(s)
-        if node.get("surface_exposure") is None:
-            node["surface_exposure"] = _nearest_surface_exposure(lookup, x, z)
+        if node.get("exposure_score") is None:
+            node["exposure_score"] = _nearest_surface_exposure(lookup, x, z)
         entries.append((s, node, True))
 
     entries.sort(key=lambda entry: entry[0])
@@ -676,27 +648,30 @@ def extend_with_flight_phases(route, origin, destination, profile, grid_points,
 
     return result
 
+
 def annotate_route(route, grid_points=None, default_phase="cruise"):
     """
-    Fills in display/metadata fields on an already-computed route
-    (used by the baseline generator, whose straight-line path doesn't
-    go through extend_with_flight_phases). Mutates and returns the route.
+    Fills in display/metadata fields on an already-computed route.
+    grid_points must be the weather grid (a list of dicts) or None —
+    anything else (e.g. an AircraftProfile passed by mistake) is ignored.
+    Mutates and returns the route.
     """
-    lookup = _surface_exposure_lookup(grid_points) if grid_points else None
+    if isinstance(grid_points, list) and grid_points and isinstance(grid_points[0], dict):
+        lookup = _surface_exposure_lookup(grid_points)
+    else:
+        lookup = None
 
     for waypoint in route:
-        if waypoint.get("surface_exposure") is None:
-            if lookup is not None:
-                waypoint["surface_exposure"] = _nearest_surface_exposure(
-                    lookup, waypoint["x"], waypoint["z"]
-                )
-            else:
-                waypoint["surface_exposure"] = 0
+        if waypoint.get("exposure_score") is None:
+            waypoint["exposure_score"] = (
+                _nearest_surface_exposure(lookup, waypoint["x"], waypoint["z"])
+                if lookup else 0
+            )
         if waypoint.get("phase") is None:
             waypoint["phase"] = default_phase
-        if waypoint.get("pressure_level") is None:
-            waypoint["pressure_level"] = None
+        waypoint.setdefault("pressure_level", None)
     return route
+
 
 # ---------------------------------------------------------------------------
 # Replan helpers
@@ -758,6 +733,44 @@ def estimate_route_position(route, progress):
     return dict(route[-1])
 
 
+class _ExposureIndex:
+    """
+    Bucketed nearest-cell exposure lookup, keyed per pressure level.
+
+    Handles both int and str level keys (JSON round-trips through the
+    frontend turn int keys into strings). Built once per grid; each
+    waypoint query then touches only its own bucket and neighbors.
+    """
+
+    def __init__(self, grid):
+        self.by_level = {}
+        if not grid:
+            return
+        entries_by_level = {}
+        for point in grid:
+            levels = point.get("levels", {})
+            x, z = point.get("x"), point.get("z")
+            if x is None or z is None:
+                x, z = latlon_to_scene_xz(point["lat"], point["lon"])
+            x, z = float(x), float(z)
+            for level, level_data in levels.items():
+                if not level_data:
+                    continue
+                entries_by_level.setdefault(level, []).append(
+                    (x, z, level_data.get("exposure_score"))
+                )
+        for level, entries in entries_by_level.items():
+            self.by_level[level] = _BucketIndex(entries, _bucket_size_for(entries))
+
+    def nearest_exposure(self, waypoint, pressure_level):
+        if pressure_level is None:
+            return None
+        index = self.by_level.get(pressure_level) or self.by_level.get(str(pressure_level))
+        if index is None:
+            return None
+        return index.nearest(float(waypoint["x"]), float(waypoint["z"]))
+
+
 def assess_route_weather_change(previous_grid, updated_grid, route, progress):
     """Compare exposure on the remaining route and flag material increases."""
     current_position = estimate_route_position(route, progress)
@@ -773,11 +786,22 @@ def assess_route_weather_change(previous_grid, updated_grid, route, progress):
         if total_distance and remaining_distance / total_distance > progress:
             samples.append(end)
 
+    # Build both spatial indexes ONCE for the whole assessment instead of
+    # scanning the full grid per waypoint.
+    previous_index = _ExposureIndex(previous_grid) if previous_grid else None
+    updated_index = _ExposureIndex(updated_grid) if updated_grid else None
+
     changes = []
     for waypoint in samples:
         pressure_level = waypoint.get("pressure_level")
-        previous_score = _nearest_exposure(previous_grid, waypoint, pressure_level)
-        updated_score = _nearest_exposure(updated_grid, waypoint, pressure_level)
+        previous_score = (
+            previous_index.nearest_exposure(waypoint, pressure_level)
+            if previous_index else None
+        )
+        updated_score = (
+            updated_index.nearest_exposure(waypoint, pressure_level)
+            if updated_index else None
+        )
         if previous_score is None or updated_score is None:
             continue
         delta = updated_score - previous_score
@@ -824,24 +848,11 @@ def _waypoint_distance(start, end):
     )
 
 
+# Kept for backwards compatibility with any external callers.
 def _nearest_exposure(grid, waypoint, pressure_level):
     if pressure_level is None or not grid:
         return None
-    nearest = None
-    nearest_distance = float("inf")
-    for point in grid:
-        levels = point.get("levels", {})
-        level_data = levels.get(pressure_level, levels.get(str(pressure_level)))
-        if not level_data:
-            continue
-        x, z = point.get("x"), point.get("z")
-        if x is None or z is None:
-            x, z = latlon_to_scene_xz(point["lat"], point["lon"])
-        distance = (x - waypoint["x"]) ** 2 + (z - waypoint["z"]) ** 2
-        if distance < nearest_distance:
-            nearest_distance = distance
-            nearest = level_data.get("exposure_score")
-    return nearest
+    return _ExposureIndex(grid).nearest_exposure(waypoint, pressure_level)
 
 
 # ---------------------------------------------------------------------------
@@ -949,7 +960,7 @@ def find_path(grid_points, origin, destination, mode="Balanced",
         path_indices.append(predecessor)
     path_indices.reverse()
 
-    # Cruise path: grid nodes only. The ground phases are appended around it.
+    # Cruise path: grid nodes only. The ground phases are wrapped around it.
     route = [_route_waypoint(nodes[index]) for index in path_indices]
 
     if start_position:
@@ -975,7 +986,7 @@ def find_path(grid_points, origin, destination, mode="Balanced",
             include_takeoff=True, include_landing=True,
         )
 
-    return annotate_route(route, profile)
+    return annotate_route(route, grid_points)
 
 
 # ---------------------------------------------------------------------------
@@ -1058,12 +1069,53 @@ def compute_route_metrics(waypoints, profile=None):
 
 
 def find_avoided_high_exposure_cells(grid_points, baseline_route, optimized_route):
-    """Return high-exposure baseline cells absent from the optimized path."""
+    """Return high-exposure baseline cells absent from the optimized path.
+
+    Uses a bucketed spatial index per pressure level, built once, instead
+    of scanning every node per waypoint — this was the single largest CPU
+    sink in the scene payload build after A* itself.
+    """
     nodes, _, _, _ = _build_nodes(grid_points)
     baseline_level = BASELINE_PRESSURE_LEVEL
+
+    index_by_level = {}
+    all_levels = {node.pressure_level for node in nodes.values()}
+    for level in all_levels:
+        entries = [
+            (node.x, node.z, node)
+            for node in nodes.values()
+            if node.pressure_level == level
+        ]
+        if entries:
+            index_by_level[level] = _BucketIndex(entries, _bucket_size_for(entries))
+
+    def nearest_node_at(waypoint, pressure_level=None):
+        if pressure_level is not None:
+            index = index_by_level.get(pressure_level)
+            if index is None:
+                return None
+            return index.nearest(float(waypoint["x"]), float(waypoint["z"]))
+        # Any level: nearest across levels by 3D distance (matches the
+        # original _nearest_grid_cell semantics).
+        best = None
+        best_distance = float("inf")
+        for index in index_by_level.values():
+            payload = index.nearest(float(waypoint["x"]), float(waypoint["z"]))
+            if payload is None:
+                continue
+            distance = (
+                (payload.x - waypoint["x"]) ** 2
+                + (payload.z - waypoint["z"]) ** 2
+                + ((payload.y - waypoint["y"]) / VERTICAL_EXAGGERATION) ** 2
+            )
+            if distance < best_distance:
+                best_distance = distance
+                best = payload
+        return best
+
     optimized_cells = set()
     for waypoint in optimized_route:
-        matching = _nearest_grid_cell(nodes, waypoint)
+        matching = nearest_node_at(waypoint)
         if matching is not None:
             optimized_cells.add(
                 (matching.lat, matching.lon, matching.pressure_level)
@@ -1071,7 +1123,7 @@ def find_avoided_high_exposure_cells(grid_points, baseline_route, optimized_rout
 
     avoided = {}
     for waypoint in baseline_route:
-        matching = _nearest_grid_cell(nodes, waypoint, baseline_level)
+        matching = nearest_node_at(waypoint, baseline_level)
         if (
             matching is not None
             and matching.exposure_score is not None
@@ -1091,25 +1143,3 @@ def find_avoided_high_exposure_cells(grid_points, baseline_route, optimized_rout
         avoided.values(),
         key=lambda cell: (-cell["exposure_score"], cell["lat"], cell["lon"]),
     )[:10]
-
-
-def _nearest_grid_cell(nodes, waypoint, pressure_level=None):
-    candidates = [
-        node
-        for node in nodes.values()
-        if pressure_level is None or node.pressure_level == pressure_level
-    ]
-    if not candidates:
-        return None
-    x, z = latlon_to_scene_xz(waypoint["lat"], waypoint["lon"])
-    return min(
-        candidates,
-        key=lambda node: (
-            (node.x - x) ** 2
-            + (node.z - z) ** 2
-            + (
-                (node.y - waypoint["y"]) / VERTICAL_EXAGGERATION
-            ) ** 2,
-            node.index,
-        ),
-    )

@@ -4,10 +4,10 @@ import { loadModel } from '../loaders/modelLoader.js';
 
 const modelPath = `${import.meta.env.BASE_URL}${planeModelConfig.path.replace(/^\/+/, '')}`;
 
-// Must mirror grid/coordinates.py exactly.
-const VERTICAL_EXAGGERATION = 6;
-const PHASE_VS_THRESHOLD_M_PER_MIN = 40;
-const GROUND_ALTITUDE_KM = 0.12;
+// Must mirror grid/coordinates.py exactly. The backend bakes every scene y
+// with THIS factor — dividing by anything else misreports altitude in the
+// HUD and corrupts vertical-speed / phase classification.
+const VERTICAL_EXAGGERATION = 4;
 
 export async function createPlaneTemplate() {
     const model = await loadModel(modelPath);
