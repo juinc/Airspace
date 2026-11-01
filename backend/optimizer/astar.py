@@ -13,16 +13,28 @@ from grid.coordinates import (
     VERTICAL_EXAGGERATION,
 )
 
-# Default aircraft assumptions — a generic narrowbody jet.
-# Simulation parameters, NOT aircraft-specific performance data.
-CRUISE_SPEED_KMH = 800
-CLIMB_RATE_M_PER_MIN = 600
+# Original Citation CJ3 nominal reference data. Published limits vary by
+# serial number and installed options; modeled estimates are identified below.
+AIRCRAFT_NAME = "Cessna Citation CJ3"
+AIRCRAFT_VARIANT = "CJ3 (original)"
+MAX_RAMP_WEIGHT_KG = 6350.3
+MAX_TAKEOFF_WEIGHT_KG = 6291.4
+MAX_LANDING_WEIGHT_KG = 5783.3
+MAX_FUEL_CAPACITY_KG = 2136.4
+MAX_CRUISE_SPEED_KTS = 416.0
+MAX_RANGE_NM = 2040.0
+SERVICE_CEILING_FT = 45000
+
+# Fuel flow, descent rate, and scenario gross mass are estimates, not POH or
+# dispatch-performance values.
+CRUISE_SPEED_KMH = MAX_CRUISE_SPEED_KTS * 1.852
+CLIMB_RATE_M_PER_MIN = 1189.0
 DESCENT_RATE_M_PER_MIN = 600
 ALTITUDE_CHANGE_PENALTY_MIN = 0.5
-REFERENCE_WEIGHT_KG = 73000.0
-FUEL_BURN_KG_PER_HOUR = 2500.0
-FUEL_CAPACITY_KG = 20000.0
-MAX_ALTITUDE_KM = 12.5
+REFERENCE_WEIGHT_KG = MAX_TAKEOFF_WEIGHT_KG
+FUEL_BURN_KG_PER_HOUR = 520.0
+FUEL_CAPACITY_KG = MAX_FUEL_CAPACITY_KG
+MAX_ALTITUDE_KM = SERVICE_CEILING_FT * 0.0003048
 FUEL_RESERVE_FRACTION = 0.25
 
 BASELINE_PRESSURE_LEVEL = 250
@@ -57,8 +69,16 @@ MERGE_TOLERANCE_KM = 0.4
 
 @dataclass(frozen=True)
 class AircraftProfile:
-    """Aircraft parameters settable from the frontend. Modeled assumptions."""
+    """CJ3 reference profile with explicitly modeled flight assumptions."""
 
+    aircraft_name: str = AIRCRAFT_NAME
+    aircraft_variant: str = AIRCRAFT_VARIANT
+    max_ramp_weight_kg: float = MAX_RAMP_WEIGHT_KG
+    max_takeoff_weight_kg: float = MAX_TAKEOFF_WEIGHT_KG
+    max_landing_weight_kg: float = MAX_LANDING_WEIGHT_KG
+    max_cruise_speed_kts: float = MAX_CRUISE_SPEED_KTS
+    max_range_nm: float = MAX_RANGE_NM
+    service_ceiling_ft: int = SERVICE_CEILING_FT
     cruise_speed_kmh: float = CRUISE_SPEED_KMH
     climb_rate_m_per_min: float = CLIMB_RATE_M_PER_MIN
     descent_rate_m_per_min: float = DESCENT_RATE_M_PER_MIN
@@ -68,6 +88,8 @@ class AircraftProfile:
     fuel_burn_kg_per_hour: float = FUEL_BURN_KG_PER_HOUR
     fuel_capacity_kg: float = FUEL_CAPACITY_KG
     max_altitude_km: float = MAX_ALTITUDE_KM
+    modeled_mass_basis: str = "Maximum takeoff mass used as the scenario gross-mass assumption"
+    fuel_burn_basis: str = "520 kg/h scenario estimate; not POH or dispatch data"
 
     def __post_init__(self):
         positive_fields = (
@@ -303,6 +325,90 @@ def _heuristic(node, goal, profile):
     # weather terms only ever ADD cost, never subtract.
     horizontal_km = math.hypot(goal.x - node.x, goal.z - node.z)
     return horizontal_km / profile.cruise_speed_kmh * 60
+
+
+ROUTE_INTERSECTION_CLEARANCE_KM = 0.05
+
+
+def _waypoint_3d(waypoint):
+    altitude = waypoint.get("altitude_km")
+    if altitude is None:
+        altitude = waypoint["y"] / VERTICAL_EXAGGERATION
+    return waypoint["x"], float(altitude), waypoint["z"]
+
+
+def _segment_distance_squared(first_start, first_end, second_start, second_end):
+    """Minimum squared distance between two finite 3D line segments."""
+    first = tuple(end - start for start, end in zip(first_start, first_end))
+    second = tuple(end - start for start, end in zip(second_start, second_end))
+    offset = tuple(a - b for a, b in zip(first_start, second_start))
+    dot = lambda a, b: sum(x * y for x, y in zip(a, b))
+    a, b, c = dot(first, first), dot(first, second), dot(second, second)
+    d, e = dot(first, offset), dot(second, offset)
+    denominator = a * c - b * b
+
+    if a <= 1e-12 and c <= 1e-12:
+        return dot(offset, offset)
+    if a <= 1e-12:
+        first_fraction = 0.0
+        second_fraction = min(1.0, max(0.0, e / c))
+    elif c <= 1e-12:
+        second_fraction = 0.0
+        first_fraction = min(1.0, max(0.0, -d / a))
+    else:
+        first_fraction = 0.0 if denominator <= 1e-12 else min(
+            1.0, max(0.0, (b * e - c * d) / denominator)
+        )
+        second_fraction = (b * first_fraction + e) / c
+        if second_fraction < 0.0:
+            second_fraction = 0.0
+            first_fraction = min(1.0, max(0.0, -d / a))
+        elif second_fraction > 1.0:
+            second_fraction = 1.0
+            first_fraction = min(1.0, max(0.0, (b - d) / a))
+
+    separation = tuple(
+        delta + first_fraction * first_axis - second_fraction * second_axis
+        for delta, first_axis, second_axis in zip(offset, first, second)
+    )
+    return dot(separation, separation)
+
+
+def _route_segments(route):
+    for start, end in zip(route, route[1:]):
+        if start.get("phase") in {"takeoff", "landing"}:
+            continue
+        if end.get("phase") in {"takeoff", "landing"}:
+            continue
+        yield _waypoint_3d(start), _waypoint_3d(end)
+
+
+def routes_intersect(first_route, second_route,
+                     clearance_km=ROUTE_INTERSECTION_CLEARANCE_KM):
+    """Whether two routes cross or pass within the configured 3D clearance.
+
+    Takeoff and landing segments are excluded because multiple routes may
+    legitimately share airport terminal points in these demonstration scenes.
+    """
+    minimum_distance_squared = clearance_km * clearance_km
+    second_segments = tuple(_route_segments(second_route))
+    return any(
+        _segment_distance_squared(start, end, other_start, other_end)
+        <= minimum_distance_squared
+        for start, end in _route_segments(first_route)
+        for other_start, other_end in second_segments
+    )
+
+
+def _edge_intersects_routes(current, neighbor, routes):
+    start = (current.x, current.altitude_km, current.z)
+    end = (neighbor.x, neighbor.altitude_km, neighbor.z)
+    clearance_squared = ROUTE_INTERSECTION_CLEARANCE_KM ** 2
+    for route in routes:
+        for other_start, other_end in _route_segments(route):
+            if _segment_distance_squared(start, end, other_start, other_end) <= clearance_squared:
+                return True
+    return False
 
 
 def _nearest_node(nodes, airport, preferred_layer):
@@ -562,7 +668,31 @@ def extend_with_flight_phases(route, origin, destination, profile, grid_points,
         return route
     lookup = _surface_exposure_lookup(grid_points)
 
-    points = _polyline_points(route, origin, destination)
+    if include_takeoff:
+        points = _polyline_points(route, origin, destination)
+    else:
+        points = [
+            {
+                "lat": waypoint["lat"],
+                "lon": waypoint["lon"],
+                "x": waypoint["x"],
+                "z": waypoint["z"],
+                "altitude_km": waypoint.get("altitude_km") or 0.0,
+            }
+            for waypoint in route
+        ]
+        destination_x, destination_z = latlon_to_scene_xz(
+            destination["lat"], destination["lon"]
+        )
+        points.append(
+            {
+                "lat": destination["lat"],
+                "lon": destination["lon"],
+                "x": destination_x,
+                "z": destination_z,
+                "altitude_km": 0.0,
+            }
+        )
     dists = _cumulative_distances(points)
     total_km = dists[-1]
     if total_km <= 1e-6:
@@ -860,7 +990,7 @@ def _nearest_exposure(grid, waypoint, pressure_level):
 # ---------------------------------------------------------------------------
 
 def find_path(grid_points, origin, destination, mode="Balanced",
-              start_position=None, profile=None):
+              start_position=None, profile=None, avoid_routes=None):
     """Find a weather-aware route through the 26-connected forecast grid.
 
     The returned route is a COMPLETE flight: ground roll and climb out of
@@ -872,6 +1002,7 @@ def find_path(grid_points, origin, destination, mode="Balanced",
     canonical_mode = normalize_mode(mode)
     weather_weight = WEATHER_WEIGHTS[canonical_mode]
     profile = profile or AircraftProfile()
+    avoid_routes = avoid_routes or ()
 
     nodes, pressure_levels, _, _ = _build_nodes(grid_points)
 
@@ -919,6 +1050,8 @@ def find_path(grid_points, origin, destination, mode="Balanced",
 
         for neighbor in _neighbors(current_index, nodes):
             if neighbor.index in closed:
+                continue
+            if avoid_routes and _edge_intersects_routes(current, neighbor, avoid_routes):
                 continue
             current_cost = costs[current_index]
             edge_cost = calculate_edge_cost(

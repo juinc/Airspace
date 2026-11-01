@@ -1,3 +1,5 @@
+import math
+
 from grid.coordinates import (
     FALLBACK_ALTITUDE_M,
     altitude_to_scene_y,
@@ -86,6 +88,53 @@ def generate_baseline_route(
         waypoints, origin, destination, profile, grid_points
     )
     return annotate_route(route, profile)
+
+
+def match_route_waypoint_count(route, target_count):
+    """Resample an existing polyline to a requested count without changing its shape."""
+    if len(route) < 2 or target_count < 2:
+        raise ValueError("route and target_count must each contain at least two points")
+    if len(route) == target_count:
+        return [dict(point) for point in route]
+
+    cumulative = [0.0]
+    for start, end in zip(route, route[1:]):
+        altitude_delta = end["altitude_km"] - start["altitude_km"]
+        cumulative.append(
+            cumulative[-1]
+            + math.sqrt(
+                (end["x"] - start["x"]) ** 2
+                + (end["z"] - start["z"]) ** 2
+                + altitude_delta ** 2
+            )
+        )
+
+    total_distance = cumulative[-1]
+    result = []
+    segment_index = 0
+    for sample_index in range(target_count):
+        distance = total_distance * sample_index / (target_count - 1)
+        while (segment_index < len(cumulative) - 2
+               and cumulative[segment_index + 1] < distance):
+            segment_index += 1
+        start, end = route[segment_index], route[segment_index + 1]
+        segment_length = cumulative[segment_index + 1] - cumulative[segment_index]
+        fraction = (
+            (distance - cumulative[segment_index]) / segment_length
+            if segment_length > 1e-9 else 0.0
+        )
+        point = dict(start if fraction < 0.5 else end)
+        for key in ("lat", "lon", "x", "y", "z", "altitude_km"):
+            point[key] = start[key] + (end[key] - start[key]) * fraction
+        first_exposure = start.get("exposure_score")
+        second_exposure = end.get("exposure_score")
+        point["exposure_score"] = (
+            first_exposure + (second_exposure - first_exposure) * fraction
+            if first_exposure is not None and second_exposure is not None
+            else None
+        )
+        result.append(point)
+    return result
 
 
 generate_stub_route = generate_baseline_route

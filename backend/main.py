@@ -30,15 +30,18 @@ from grid.coordinates import (
 from optimizer.astar import (
     AircraftProfile,
     BASELINE_PRESSURE_LEVEL,
+    ROUTE_INTERSECTION_CLEARANCE_KM,
     WEATHER_WEIGHTS,
     compute_route_metrics,
     assess_route_weather_change,
     estimate_route_position,
-    extend_with_flight_phases,
     find_path,
     normalize_mode,
 )
-from optimizer.stub_trajectory import generate_baseline_route
+from optimizer.stub_trajectory import (
+    generate_baseline_route,
+    match_route_waypoint_count,
+)
 from synthetic_scenarios import (
     AIRPORTS,
     MULTI_FLIGHT_SCENARIOS,
@@ -115,15 +118,15 @@ def _cached_scenario(key, builder):
 
 
 class AircraftProfileRequest(BaseModel):
-    """Aircraft parameters. All values are simulation assumptions."""
-    cruise_speed_kmh: float = Field(default=800, ge=300, le=1000)
-    climb_rate_m_per_min: float = Field(default=600, ge=60, le=1500)
-    descent_rate_m_per_min: float = Field(default=600, ge=60, le=1500)
-    altitude_change_penalty_min: float = Field(default=0.5, ge=0, le=30)
-    weight_kg: float = Field(default=73000, ge=5000, le=500000)
-    fuel_burn_kg_per_hour: float = Field(default=2500, ge=100, le=20000)
-    fuel_capacity_kg: float = Field(default=20000, ge=1000, le=200000)
-    max_altitude_km: float = Field(default=12.5, ge=5, le=20)
+    """CJ3 nominal defaults; caller overrides remain simulation-only."""
+    cruise_speed_kmh: float = Field(default=AircraftProfile().cruise_speed_kmh, ge=300, le=1000)
+    climb_rate_m_per_min: float = Field(default=AircraftProfile().climb_rate_m_per_min, ge=60, le=1500)
+    descent_rate_m_per_min: float = Field(default=AircraftProfile().descent_rate_m_per_min, ge=60, le=1500)
+    altitude_change_penalty_min: float = Field(default=AircraftProfile().altitude_change_penalty_min, ge=0, le=30)
+    weight_kg: float = Field(default=AircraftProfile().weight_kg, ge=5000, le=500000)
+    fuel_burn_kg_per_hour: float = Field(default=AircraftProfile().fuel_burn_kg_per_hour, ge=100, le=20000)
+    fuel_capacity_kg: float = Field(default=AircraftProfile().fuel_capacity_kg, ge=1000, le=200000)
+    max_altitude_km: float = Field(default=AircraftProfile().max_altitude_km, ge=5, le=20)
 
 
 def _aircraft_profile(req) -> AircraftProfile:
@@ -303,6 +306,9 @@ def _forecast_metadata(grid_results):
 def _routing_assumptions(profile: AircraftProfile):
     return {
         "aircraft_profile": profile.as_dict(),
+        "enroute_route_clearance_km": ROUTE_INTERSECTION_CLEARANCE_KM,
+        "route_intersection_policy": "3D centerline; takeoff and landing segments excluded",
+        "operational_collision_avoidance": False,
         "baseline_pressure_level_hpa": BASELINE_PRESSURE_LEVEL,
         "climb_descent_model": "parallel_climb_max_time",
         "phase_geometry": "full_route_continuous_vertical_profile",
@@ -362,19 +368,14 @@ def _scene_routes(grid_results, mode, profile: AircraftProfile):
     optimized_route = find_path(
         grid_results, ROUTE["origin"], ROUTE["destination"], mode=mode, profile=profile
     )
-    optimized_route = extend_with_flight_phases(
-        optimized_route, ROUTE["origin"], ROUTE["destination"], profile, grid_results
-    )
     baseline_route = generate_baseline_route(
         ROUTE["origin"],
         ROUTE["destination"],
         grid_results,
-        num_points=max(1, len(optimized_route) - 1),
+        num_points=1,
         profile=profile,
     )
-    baseline_route = extend_with_flight_phases(
-        baseline_route, ROUTE["origin"], ROUTE["destination"], profile, grid_results
-    )
+    baseline_route = match_route_waypoint_count(baseline_route, len(optimized_route))
     canonical_mode = normalize_mode(mode)
     return {
         "baseline": baseline_route,
@@ -727,9 +728,6 @@ def _weather_replan_payload(
             start_position=resume_position,
             profile=profile,
         )
-        optimized_route = extend_with_flight_phases(
-            optimized_route, ROUTE["origin"], ROUTE["destination"], profile, updated_grid
-        )
         trajectory_status = f"A* replanned from {route_progress:.0%} route progress"
     else:
         optimized_route = previous_route
@@ -739,12 +737,10 @@ def _weather_replan_payload(
         ROUTE["origin"],
         ROUTE["destination"],
         updated_grid,
-        num_points=max(1, len(optimized_route) - 1),
+        num_points=1,
         profile=profile,
     )
-    baseline_route = extend_with_flight_phases(
-        baseline_route, ROUTE["origin"], ROUTE["destination"], profile, updated_grid
-    )
+    baseline_route = match_route_waypoint_count(baseline_route, len(optimized_route))
     routes = {
         "baseline": baseline_route,
         "previous_optimized": previous_route,

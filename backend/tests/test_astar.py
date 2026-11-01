@@ -9,15 +9,18 @@ from grid.coordinates import (
     latlon_to_scene_xz,
 )
 from optimizer.astar import (
+    AircraftProfile,
     WEATHER_WEIGHTS,
     _build_nodes,
     _neighbors,
     assess_route_weather_change,
     calculate_edge_cost,
     compute_route_metrics,
+    edge_travel_time_min,
     estimate_route_position,
     find_path,
     normalize_mode,
+    routes_intersect,
 )
 
 
@@ -57,7 +60,11 @@ def test_edge_cost_applies_destination_weather_and_altitude_penalty():
         "exposure_score": 50,
     }
 
-    expected = math.sqrt(3**2 + 4**2) / 800 * 60 * 2 + 2
+    profile = AircraftProfile()
+    expected = (
+        edge_travel_time_min(current, destination, profile) * 2
+        + profile.altitude_change_penalty_min
+    )
     assert calculate_edge_cost(current, destination, weather_weight=2) == expected
 
 
@@ -71,7 +78,9 @@ def test_edge_cost_ignores_missing_exposure_instead_of_treating_it_as_zero_risk(
         "exposure_score": None,
     }
 
-    assert calculate_edge_cost(current, destination, weather_weight=5) == 4 / 800 * 60
+    assert calculate_edge_cost(current, destination, weather_weight=5) == (
+        4 / AircraftProfile().cruise_speed_kmh * 60
+    )
 
 
 def test_neighbors_include_all_26_adjacent_nodes():
@@ -97,6 +106,45 @@ def test_path_detours_around_high_exposure_cells():
         waypoint["lat"] == 44.1 and waypoint["lon"] in {23.1, 23.2, 23.3}
         for waypoint in grid_waypoints
     )
+
+
+def test_astar_avoids_reserved_enroute_path_segments():
+    grid = _grid(rows=3, columns=5)
+    origin = {"lat": 44.1, "lon": 23.0}
+    destination = {"lat": 44.1, "lon": 23.4}
+    reserved_route = [
+        {"lat": 44.1, "lon": 23.1, "x": latlon_to_scene_xz(44.1, 23.1)[0],
+         "z": latlon_to_scene_xz(44.1, 23.1)[1],
+         "altitude_km": FALLBACK_ALTITUDE_M[250] / 1000, "phase": "cruise"},
+        {"lat": 44.1, "lon": 23.3, "x": latlon_to_scene_xz(44.1, 23.3)[0],
+         "z": latlon_to_scene_xz(44.1, 23.3)[1],
+         "altitude_km": FALLBACK_ALTITUDE_M[250] / 1000, "phase": "cruise"},
+    ]
+
+    route = find_path(
+        grid, origin, destination, mode="Fastest", avoid_routes=[reserved_route]
+    )
+
+    assert not routes_intersect(route, reserved_route)
+    assert any(abs(waypoint["lat"] - origin["lat"]) > 0.01 for waypoint in route)
+
+
+def test_route_intersection_check_uses_altitude_as_a_3d_axis():
+    route_a = [
+        {"x": -1, "z": 0, "altitude_km": 8, "phase": "cruise"},
+        {"x": 1, "z": 0, "altitude_km": 8, "phase": "cruise"},
+    ]
+    route_b = [
+        {"x": 0, "z": -1, "altitude_km": 8, "phase": "cruise"},
+        {"x": 0, "z": 1, "altitude_km": 8, "phase": "cruise"},
+    ]
+    route_c = [
+        {"x": 0, "z": -1, "altitude_km": 9, "phase": "cruise"},
+        {"x": 0, "z": 1, "altitude_km": 9, "phase": "cruise"},
+    ]
+
+    assert routes_intersect(route_a, route_b)
+    assert not routes_intersect(route_a, route_c)
 
 
 def test_weather_weight_changes_whether_a_single_high_exposure_cell_is_avoided():
@@ -210,8 +258,14 @@ def test_route_metrics_measure_physical_vertical_distance_and_skip_null_exposure
     metrics = compute_route_metrics(route)
     distance_km = math.sqrt(3**2 + 4**2 + (80 / VERTICAL_EXAGGERATION) ** 2)
 
-    assert metrics == {
-        "distance_km": round(distance_km, 1),
-        "time_min": round(distance_km / 800 * 60, 1),
-        "avg_exposure": 20.0,
-    }
+    assert metrics["distance_km"] == round(distance_km, 1)
+    assert metrics["time_min"] == round(
+        edge_travel_time_min(
+            {"x": 0, "z": 0, "altitude_km": 80 / VERTICAL_EXAGGERATION},
+            {"x": 3, "z": 4, "altitude_km": 160 / VERTICAL_EXAGGERATION},
+            AircraftProfile(),
+        ),
+        1,
+    )
+    assert metrics["avg_exposure"] == 20.0
+    assert metrics["fuel_estimated_kg"] > 0

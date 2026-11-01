@@ -127,8 +127,14 @@ def test_scene_data_includes_backend_positioned_airports(monkeypatch):
     )
     assert response.json()["meta"]["trajectory_status"].startswith("A* optimized route")
     assumptions = response.json()["meta"]["routing_assumptions"]
-    assert assumptions["cruise_speed_kmh"] == 800
-    assert assumptions["climb_descent_model"] == "constant_cruise_speed"
+    aircraft_profile = assumptions["aircraft_profile"]
+    assert aircraft_profile["aircraft_name"] == "Cessna Citation CJ3"
+    assert aircraft_profile["aircraft_variant"] == "CJ3 (original)"
+    assert aircraft_profile["cruise_speed_kmh"] == pytest.approx(416 * 1.852)
+    assert aircraft_profile["fuel_capacity_kg"] == pytest.approx(2136.4)
+    assert "not POH" in aircraft_profile["fuel_burn_basis"]
+    assert assumptions["climb_descent_model"] == "parallel_climb_max_time"
+    assert assumptions["operational_collision_avoidance"] is False
     assert assumptions["terrain_clearance_validated"] is False
     assert len(response.json()["routes"]["baseline"]) == len(
         response.json()["routes"]["optimized"]

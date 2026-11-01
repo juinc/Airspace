@@ -85,6 +85,17 @@ const HUD_STYLES = `
     letter-spacing: 0.06em;
     color: #46586c;
 }
+.airspace-flight-hud .aircraft-details {
+    pointer-events: auto;
+    margin-top: 8px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    padding-top: 6px;
+}
+.airspace-flight-hud .aircraft-details summary {
+    color: #8fa3b5;
+    cursor: pointer;
+    font-size: 10px;
+}
 `;
 
 // 10 Hz is plenty for a status panel — writing 15 DOM nodes 60x per second
@@ -107,6 +118,7 @@ export function createFlightHud({ getPlaneState, getPayload }) {
 
     hud.innerHTML = `
         <div class="hud-title"><span>Aircraft Status</span><span class="phase-chip">—</span></div>
+        <div class="row"><span class="key">Airframe</span><span class="val airframe">—</span></div>
         <div class="row"><span class="key">Phase</span><span class="val phase">—</span></div>
         <div class="section-title">Navigation</div>
         <div class="row"><span class="key">Latitude</span><span class="val lat">—</span></div>
@@ -124,11 +136,23 @@ export function createFlightHud({ getPlaneState, getPayload }) {
         <div class="bar progress"><div class="fill" style="width:0%"></div></div>
         <div class="row"><span class="key">ETA</span><span class="val eta">—</span></div>
         <div class="row"><span class="key">Distance remaining</span><span class="val dist">—</span></div>
-        <div class="footnote">Modeled flight parameters — simulation, not performance data</div>
+        <details class="aircraft-details">
+            <summary>CJ3 reference specifications</summary>
+            <div class="row"><span class="key">Modeled gross mass</span><span class="val gross-mass">—</span></div>
+            <div class="row"><span class="key">Max ramp mass</span><span class="val ramp-mass">—</span></div>
+            <div class="row"><span class="key">Max takeoff mass</span><span class="val takeoff-mass">—</span></div>
+            <div class="row"><span class="key">Max landing mass</span><span class="val landing-mass">—</span></div>
+            <div class="row"><span class="key">Max usable fuel</span><span class="val fuel-capacity">—</span></div>
+            <div class="row"><span class="key">Max cruise speed</span><span class="val max-cruise">—</span></div>
+            <div class="row"><span class="key">Service ceiling</span><span class="val ceiling">—</span></div>
+            <div class="row"><span class="key">Published range</span><span class="val range">—</span></div>
+        </details>
+        <div class="footnote">Nominal CJ3 specifications; fuel flow and route performance are simulation estimates</div>
     `;
 
     const el = {
         phaseChip: hud.querySelector('.phase-chip'),
+        airframe: hud.querySelector('.airframe'),
         phase: hud.querySelector('.phase'),
         lat: hud.querySelector('.lat'),
         lon: hud.querySelector('.lon'),
@@ -143,6 +167,14 @@ export function createFlightHud({ getPlaneState, getPayload }) {
         progressBar: hud.querySelector('.bar.progress .fill'),
         eta: hud.querySelector('.eta'),
         dist: hud.querySelector('.dist'),
+        grossMass: hud.querySelector('.gross-mass'),
+        rampMass: hud.querySelector('.ramp-mass'),
+        takeoffMass: hud.querySelector('.takeoff-mass'),
+        landingMass: hud.querySelector('.landing-mass'),
+        fuelCapacity: hud.querySelector('.fuel-capacity'),
+        maxCruise: hud.querySelector('.max-cruise'),
+        ceiling: hud.querySelector('.ceiling'),
+        range: hud.querySelector('.range'),
     };
 
     const PHASE_COLORS = {
@@ -206,9 +238,27 @@ export function createFlightHud({ getPlaneState, getPayload }) {
         // current phase — the same values the backend used for timing/fuel.
         const profile = (payload.meta && payload.meta.routing_assumptions
             && payload.meta.routing_assumptions.aircraft_profile) || {};
-        const climbRate = profile.climb_rate_m_per_min ?? 600;    // m/min
+        const climbRate = profile.climb_rate_m_per_min ?? 1189;    // m/min
         const descentRate = profile.descent_rate_m_per_min ?? 600; // m/min
-        const cruiseSpeed = profile.cruise_speed_kmh ?? 800;
+        const cruiseSpeed = profile.cruise_speed_kmh ?? 770.432;
+        const formatMass = value => value == null
+            ? '—'
+            : `${Math.round(value).toLocaleString()} kg`;
+        el.airframe.textContent = profile.aircraft_name || 'Cessna Citation CJ3';
+        el.grossMass.textContent = formatMass(profile.weight_kg);
+        el.rampMass.textContent = formatMass(profile.max_ramp_weight_kg);
+        el.takeoffMass.textContent = formatMass(profile.max_takeoff_weight_kg);
+        el.landingMass.textContent = formatMass(profile.max_landing_weight_kg);
+        el.fuelCapacity.textContent = formatMass(profile.fuel_capacity_kg);
+        el.maxCruise.textContent = profile.max_cruise_speed_kts != null
+            ? `${Math.round(profile.max_cruise_speed_kts)} kt / ${Math.round(cruiseSpeed)} km/h`
+            : `${Math.round(cruiseSpeed)} km/h`;
+        el.ceiling.textContent = profile.service_ceiling_ft != null
+            ? `${profile.service_ceiling_ft.toLocaleString()} ft`
+            : '—';
+        el.range.textContent = profile.max_range_nm != null
+            ? `${profile.max_range_nm.toLocaleString()} nm`
+            : '—';
 
         let verticalSpeed = 0;
         let groundSpeed = cruiseSpeed;
