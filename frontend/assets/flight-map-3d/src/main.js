@@ -140,6 +140,7 @@ let weatherUpdateNumber = 0;
 let mapMesh;
 let groundSampler = null;
 let requestId = 0;
+let activeScenarioController;
 
 const mapPromise = loadModel(modelAssetUrl(isMobileDevice ? 'romania-mobile.glb' : 'romania.glb'));
 const planeTemplatePromise = createPlaneTemplate(
@@ -233,6 +234,9 @@ function createGroundSampler(map) {
 
 async function loadScenario(routeProgress = 0.35) {
     const currentRequestId = ++requestId;
+    if (activeScenarioController) activeScenarioController.abort();
+    const scenarioController = new AbortController();
+    activeScenarioController = scenarioController;
     const scenario = scenarioSelector.value;
     if (!scenario) {
         setStatus('No scenario selected.');
@@ -242,8 +246,8 @@ async function loadScenario(routeProgress = 0.35) {
 
     try {
         const payload = await (scenario === 'in-flight-replan' && activePayload
-            ? replanWeatherScene(activePayload, routeProgress)
-            : fetchSceneData(scenario, routeProgress));
+            ? replanWeatherScene(activePayload, routeProgress, undefined, scenarioController.signal)
+            : fetchSceneData(scenario, routeProgress, scenarioController.signal));
         if (currentRequestId !== requestId) return;
 
         applyScenePayload(payload, 0, false);
@@ -297,9 +301,12 @@ async function loadScenario(routeProgress = 0.35) {
 
         scheduleWeatherUpdate();
     } catch (error) {
-        console.error(`Failed to load ${scenario} scenario:`, error);
-        if (currentRequestId === requestId) setStatus(`Could not load ${scenario}: ${error.message}`);
+        if (currentRequestId === requestId) {
+            console.error(`Failed to load ${scenario} scenario:`, error);
+            setStatus(`Could not load ${scenario}: ${error.message}`);
+        }
     } finally {
+        if (activeScenarioController === scenarioController) activeScenarioController = undefined;
         document.body.classList.add('scene-ready');
     }
 }
