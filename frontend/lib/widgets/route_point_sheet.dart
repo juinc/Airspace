@@ -33,6 +33,20 @@ class RoutePointSheet extends StatelessWidget {
     final bottomInset = MediaQuery.of(context).viewInsets.bottom;
     final maxHeight = MediaQuery.of(context).size.height * 0.72;
 
+    // Pull nullables into locals so Dart can promote them to non-null
+    // (field promotion on another object never happens automatically).
+    final routeProgress = info.routeProgress;
+    final pressureLevel = info.pressureLevel;
+    final exposureScore = info.exposureScore;
+    final fuelRemainingKg = info.fuelRemainingKg;
+    final temperature = info.temperature;
+    final windSpeed = info.windSpeed;
+    final windDirection = info.windDirection;
+    final relativeHumidity = info.relativeHumidity;
+    final cloudCover = info.cloudCover;
+    final precipitation = info.precipitation;
+    final cape = info.cape;
+
     return PointerInterceptor(
       child: Padding(
         padding: EdgeInsets.only(bottom: bottomInset),
@@ -43,9 +57,7 @@ class RoutePointSheet extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // Drag handle + close row.
               _buildHeader(context),
-
               Flexible(
                 child: SingleChildScrollView(
                   padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
@@ -57,44 +69,71 @@ class RoutePointSheet extends StatelessWidget {
                       _sectionLabel('POSITION'),
                       _row('Latitude', '${info.lat.toStringAsFixed(5)}°'),
                       _row('Longitude', '${info.lon.toStringAsFixed(5)}°'),
-                      _row('Altitude',
-                          '${info.altitudeKm.toStringAsFixed(2)} km'),
-                      _row('Scene x / y / z',
-                          '${_fmt(info.lat)} · scene units in payload'),
+                      _row('Altitude', '${info.altitudeKm.toStringAsFixed(2)} km'),
                       const SizedBox(height: 12),
                       _sectionLabel('ROUTE CONTEXT'),
-                      _row('Route progress',
-                          info.routeProgress == null ? '—' : '${(info.routeProgress * 100).toStringAsFixed(1)}%'),
-                      _row('Pressure level',
-                          info.pressureLevel == null ? '—' : '${info.pressureLevel} hPa'),
-                      _row('Weather exposure',
-                          info.exposureScore == null ? '—' : '${info.exposureScore.toStringAsFixed(1)} / 100'),
+                      _row(
+                        'Route progress',
+                        routeProgress == null
+                            ? '—'
+                            : '${(routeProgress * 100).toStringAsFixed(1)}%',
+                      ),
+                      _row(
+                        'Pressure level',
+                        pressureLevel == null ? '—' : '$pressureLevel hPa',
+                      ),
+                      _row(
+                        'Weather exposure',
+                        exposureScore == null
+                            ? '—'
+                            : '${exposureScore.toStringAsFixed(1)} / 100',
+                      ),
                       _row('Flight phase', info.phase ?? '—'),
-                      _row('Fuel remaining',
-                          info.fuelRemainingKg == null ? '—' : '${info.fuelRemainingKg} kg'),
+                      _row(
+                        'Fuel remaining',
+                        fuelRemainingKg == null ? '—' : '$fuelRemainingKg kg',
+                      ),
                       const SizedBox(height: 12),
                       _sectionLabel('WEATHER AT NEAREST CELL'),
-                      _row('Temperature',
-                          info.temperature == null ? '—' : '${info.temperature.toStringAsFixed(1)} °C'),
-                      _row('Wind',
-                          info.windSpeed == null || info.windDirection == null
-                              ? _orDash(
-                                  info.windSpeed == null
-                                      ? null
-                                      : '${info.windSpeed.toStringAsFixed(1)} km/h',
-                                  info.windDirection == null
-                                      ? null
-                                      : '${info.windDirection.toStringAsFixed(0)}°',
-                                )
-                              : '${info.windSpeed.toStringAsFixed(1)} km/h · ${info.windDirection.toStringAsFixed(0)}°'),
-                      _row('Humidity',
-                          info.relativeHumidity == null ? '—' : '${info.relativeHumidity.toStringAsFixed(0)}%'),
-                      _row('Cloud cover',
-                          info.cloudCover == null ? '—' : '${info.cloudCover.toStringAsFixed(0)}%'),
-                      _row('Precipitation',
-                          info.precipitation == null ? '—' : '${info.precipitation.toStringAsFixed(1)} mm/h'),
-                      _row('CAPE',
-                          info.cape == null ? '—' : '${info.cape.toStringAsFixed(0)} J/kg'),
+                      _row(
+                        'Temperature',
+                        temperature == null
+                            ? '—'
+                            : '${temperature.toStringAsFixed(1)} °C',
+                      ),
+                      _row(
+                        'Wind',
+                        windSpeed == null && windDirection == null
+                            ? '—'
+                            : [
+                                if (windSpeed != null)
+                                  '${windSpeed.toStringAsFixed(1)} km/h',
+                                if (windDirection != null)
+                                  '${windDirection.toStringAsFixed(0)}°',
+                              ].join(' · '),
+                      ),
+                      _row(
+                        'Humidity',
+                        relativeHumidity == null
+                            ? '—'
+                            : '${relativeHumidity.toStringAsFixed(0)}%',
+                      ),
+                      _row(
+                        'Cloud cover',
+                        cloudCover == null
+                            ? '—'
+                            : '${cloudCover.toStringAsFixed(0)}%',
+                      ),
+                      _row(
+                        'Precipitation',
+                        precipitation == null
+                            ? '—'
+                            : '${precipitation.toStringAsFixed(1)} mm/h',
+                      ),
+                      _row(
+                        'CAPE',
+                        cape == null ? '—' : '${cape.toStringAsFixed(0)} J/kg',
+                      ),
                       const SizedBox(height: 8),
                       const Text(
                         'Weather values come from the nearest grid cell at the '
@@ -166,7 +205,7 @@ class RoutePointSheet extends StatelessWidget {
             ),
           ),
         ),
-        const SizedBox(width: 8),
+        const SizedBox(height: 0, width: 8),
         if (info.phase != null)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -223,14 +262,6 @@ class RoutePointSheet extends StatelessWidget {
           ],
         ),
       );
-
-  String _fmt(num value) => value.toStringAsFixed(2);
-
-  /// Joins up to two values with ' · ', skipping nulls; '—' if both null.
-  String _orDash(String? a, String? b) {
-    final parts = [a, b].whereType<String>().toList();
-    return parts.isEmpty ? '—' : parts.join(' · ');
-  }
 }
 
 class _CloseButton extends StatelessWidget {
