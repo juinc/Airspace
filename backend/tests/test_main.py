@@ -12,18 +12,19 @@ def test_health_endpoint():
     assert response.json() == {"status": "ok"}
 
 
-def test_default_scene_grid_uses_the_requested_288_point_region():
+def test_default_scene_grid_uses_the_current_masked_region():
     config = main.DEFAULT_CONFIG
     points = main.build_horizontal_grid(
         config["min_lat"], config["max_lat"],
         config["min_lon"], config["max_lon"],
         config["lat_step"], config["lon_step"],
+        mask=main.inside_with_buffer,
     )
 
-    assert len(points) == 288
-    assert (config["min_lat"], config["max_lat"]) == (43.75, 47.50)
-    assert (config["min_lon"], config["max_lon"]) == (22.75, 27.00)
-    assert config["lat_step"] == config["lon_step"] == 0.25
+    assert len(points) == 136
+    assert (config["min_lat"], config["max_lat"]) == (43.5, 48.5)
+    assert (config["min_lon"], config["max_lon"]) == (19.5, 30.0)
+    assert config["lat_step"] == config["lon_step"] == 0.5
     assert all(
         config["min_lat"] <= airport["lat"] <= config["max_lat"]
         and config["min_lon"] <= airport["lon"] <= config["max_lon"]
@@ -66,21 +67,25 @@ def test_test_weather_endpoint_returns_cache_when_available(monkeypatch):
     assert body["data"][0]["x"] is not None
 
 
-def test_weather_grid_test_mode_limits_to_four_points(monkeypatch):
+def test_weather_grid_test_mode_limits_to_36_points(monkeypatch):
     monkeypatch.setattr(main, "load_cache", lambda key: None)
     monkeypatch.setattr(main, "save_cache", lambda key, payload: None)
     monkeypatch.setattr(main, "fetch_forecast", lambda lat, lon: {"hourly": {"time": []}})
     monkeypatch.setattr(
         main,
         "parse_response",
-        lambda raw, lat, lon, levels, forecast_index=0: [{} for _ in lat],
+        lambda raw, latitudes, longitudes, levels, forecast_index=0: [
+            {"lat": lat, "lon": lon, "levels": {}}
+            for lat, lon in zip(latitudes, longitudes)
+        ],
     )
     monkeypatch.setattr(main, "select_forecast_index", lambda raw: 0)
 
     response = client.post("/weather-grid", json={"test_mode": True})
 
     assert response.status_code == 200
-    assert response.json()["point_count"] == 4
+    assert response.json()["point_count"] == 36
+    assert len(response.json()["data"]) == 36
 
 
 def test_scene_data_includes_backend_positioned_airports(monkeypatch):
@@ -143,22 +148,7 @@ def test_scene_data_includes_backend_positioned_airports(monkeypatch):
 
 
 def test_optimize_endpoint_returns_routes_for_selected_mode(monkeypatch):
-    grid = main.attach_scene_coordinates(
-        [
-            {
-                "lat": 45.5,
-                "lon": 23.75,
-                "levels": {
-                    level: {
-                        "geopotential_height": 10400,
-                        "exposure_score": None,
-                    }
-                    for level in main.PRESSURE_LEVELS
-                },
-            }
-        ],
-        main.PRESSURE_LEVELS,
-    )
+    grid = main.build_synthetic_grid("clear-airspace", main.SYNTHETIC_CONFIG)
     requested_test_modes = []
 
     def fake_scene_grid(req):
@@ -174,7 +164,7 @@ def test_optimize_endpoint_returns_routes_for_selected_mode(monkeypatch):
     routes = response.json()
     assert routes["reasoning"]["mode"] == "lower-exposure"
     assert len(routes["baseline"]) == len(routes["optimized"])
-    assert routes["metrics"]["optimized"]["avg_exposure"] is None
+    assert routes["metrics"]["optimized"]["avg_exposure"] == 0.0
 
 
 def test_optimize_endpoint_rejects_unknown_mode():
@@ -291,7 +281,7 @@ def test_replan_endpoint_returns_new_weather_and_restarts_from_airborne_position
     assert response.status_code == 200
     payload = response.json()
     assert payload["weather_update"]["replanned"] is True
-    assert payload["meta"]["scenario"] == "drastic-weather-change"
+    assert payload["meta"]["scenario"] == "in-flight-replan"
     assert payload["routes"]["optimized"][0]["lat"] == pytest.approx(
         payload["weather_update"]["resume_position"]["lat"]
     )
