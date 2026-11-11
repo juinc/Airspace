@@ -9,7 +9,12 @@ LOG_DIR="${TMPDIR:-/tmp}/airspace-dev-logs"
 API_LOG="$LOG_DIR/backend.log"
 SCENE_LOG="$LOG_DIR/scene.log"
 
-DEVICE_ID="windows"
+case "$(uname -s)" in
+    Linux) DEFAULT_DEVICE="linux" ;;
+    Darwin) DEFAULT_DEVICE="macos" ;;
+    *) DEFAULT_DEVICE="windows" ;;
+ esac
+DEVICE_ID="${DEFAULT_DEVICE}"
 DEV_HOST="${AIRSPACE_DEV_HOST:-}"
 BACKEND_PID=""
 SCENE_PID=""
@@ -19,13 +24,16 @@ usage() {
 Usage: ./run_airspace.sh [--device DEVICE_ID] [--host HOST]
 
 Examples:
+  ./run_airspace.sh --device linux
   ./run_airspace.sh --device windows
   ./run_airspace.sh --device chrome
   ./run_airspace.sh --device emulator-5554
   ./run_airspace.sh --device <device-id> --host 192.168.1.25
 
-The host override is for a physical phone on the same LAN. Android emulators
-default to 10.0.2.2; other devices default to localhost.
+The launcher defaults to Linux on Linux hosts, macOS on macOS hosts, and
+Windows on Windows hosts. The host override is for a physical phone on the
+same LAN; Android emulators default to 10.0.2.2 and other devices default to
+localhost.
 EOF
 }
 

@@ -31,7 +31,7 @@ class AirspaceWebviewHost {
         future: _windowsInitialization,
         builder: (context, snapshot) {
           if (snapshot.hasError) {
-            return _WindowsWebViewError(error: snapshot.error.toString());
+            return _PlatformWebViewError(error: snapshot.error.toString());
           }
           final controller = _windowsController;
           if (snapshot.connectionState != ConnectionState.done ||
@@ -154,10 +154,10 @@ class AirspaceWebviewHost {
       dispatch({'type': 'airspace:selectFlight', 'index': index});
 }
 
-class _WindowsWebViewError extends StatelessWidget {
+class _PlatformWebViewError extends StatelessWidget {
   final String error;
 
-  const _WindowsWebViewError({required this.error});
+  const _PlatformWebViewError({required this.error});
 
   @override
   Widget build(BuildContext context) => ColoredBox(
@@ -166,7 +166,7 @@ class _WindowsWebViewError extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.all(24),
         child: Text(
-          'Could not start the Windows WebView. Ensure the Microsoft Edge WebView2 Runtime is installed.\n\n$error',
+          'Could not start the platform WebView. On Windows, install Edge WebView2. On Linux, install the WebKit GTK runtime libraries.\n\n$error',
           textAlign: TextAlign.center,
           style: const TextStyle(color: Color(0xFF8FA3B5), fontSize: 13),
         ),

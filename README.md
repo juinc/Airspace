@@ -97,7 +97,7 @@ Python packages and Flutter/Dart dependencies in their respective manifests.
 | Windows | Windows 10 version 1809 or newer, Visual Studio 2022 Desktop C++ workload, and Microsoft Edge WebView2 Runtime |
 | Android | Android SDK, platform tools, an emulator or device, and NDK `28.2.13676358` (the Flutter SDK's current `ndkVersion`) |
 | iOS | macOS, Xcode, CocoaPods, and an iOS simulator/device |
-| Linux | Not currently supported by the scene host; see [Platform support](#platform-support) |
+| Linux | Linux desktop build support is included for local development; install the backend venv, Node/NPM, and the GTK WebKit runtime (`sudo apt-get install libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev` on Debian/Ubuntu), then launch with `bash ./run_airspace.sh --device linux` |
 
 Backend runtime dependencies are in `backend/requirements.txt`; test-only
 dependencies are added in `backend/requirements-dev.txt`. Flutter dependencies
@@ -148,14 +148,16 @@ PowerShell:
 Bash:
 
 ```bash
+bash ./run_airspace.sh --device linux
 bash ./run_airspace.sh --device windows
 bash ./run_airspace.sh --device chrome
 bash ./run_airspace.sh --device emulator-5554
 ```
 
 Replace the example device ID with one reported by `flutter devices`. The
-launchers default to `windows`; Bash accepts `--device` and `--host`, and
-PowerShell accepts `-Device` and `-DevHost`.
+launchers default to the host OS (`linux` on Linux, `macos` on macOS, and
+`windows` on Windows); Bash accepts `--device` and `--host`, and PowerShell
+accepts `-Device` and `-DevHost`.
 
 Android emulator networking uses `10.0.2.2` to reach the development machine.
 For a physical phone on the same network, provide the computer's LAN IP and
@@ -201,6 +203,7 @@ Flutter, in another terminal:
 ```bash
 cd frontend
 flutter devices
+flutter run -d linux
 flutter run -d windows
 ```
 
@@ -562,7 +565,7 @@ scenario.
 | iOS | Uses WKWebView. Build/run requires macOS and Xcode. For a physical iPhone, point `--host`/`-DevHost` at the computer's LAN IP. |
 | macOS | Uses the WKWebView implementation. The current launcher can be given a macOS Flutter device ID. |
 | Flutter Web | Supported in Chrome/Edge using the iframe host. The Vite page and API must be reachable from the browser. |
-| Linux desktop | Not supported by the current host. No Linux WebView implementation is included; available community implementations require additional native browser runtimes and are not configured here. |
+| Linux desktop | Supported for the current Linux desktop build. Verified locally with `flutter build linux --debug`; install the backend venv, Node.js/NPM, and the WebKit GTK libraries before launching the Bash wrapper. |
 
 For Windows WebView2 runtime troubleshooting, confirm the Evergreen WebView2
 Runtime is installed. On Android, the debug application uses cleartext HTTP
@@ -570,6 +573,12 @@ for the local Vite server; do not use that development setup as a production
 network-security policy. iOS local HTTP is enabled only for local networking.
 
 ## Build and deployment status
+
+The Linux WebView runtime requires the system libraries for WebKit GTK. On Debian/Ubuntu:
+
+```bash
+sudo apt-get install libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev
+```
 
 The Vite build command is:
 
@@ -612,6 +621,7 @@ Flutter static analysis and platform build examples:
 ```bash
 cd frontend
 flutter analyze
+flutter build linux --debug
 flutter build windows --debug
 flutter build web --debug
 flutter build apk --debug
@@ -633,8 +643,8 @@ scene that requires Open-Meteo; tests do not depend on the provider.
 
 | Symptom | Check |
 | --- | --- |
-| Launcher says backend venv missing | Create `backend/.venv` and install `backend/requirements-dev.txt`; Windows PowerShell uses `backend/.venv/Scripts/python.exe`. |
-| Launcher says Three.js dependencies missing | Run `npm ci --prefix frontend/assets/flight-map-3d`. |
+| Launcher says backend venv missing | Create `backend/.venv` and install `backend/requirements-dev.txt`; Linux/macOS use `backend/.venv/bin/python`, Windows PowerShell uses `backend/.venv/Scripts/python.exe`. |
+| Launcher says Three.js dependencies missing | Run `npm ci --prefix frontend/assets/flight-map-3d` (Linux/macOS use the `npm` installed on the host). |
 | Flutter cannot find the device | Run `flutter devices`; pass the exact ID to `--device` or `-Device`. |
 | Android build asks for NDK | Install NDK `28.2.13676358` through Android Studio SDK Manager or the Android SDK CLI. |
 | Phone cannot load Vite/API | Use the host computer's LAN address, allow ports 5173/8000 through the firewall, and ensure the backend CORS origin matches `http://<host>:5173`. |

@@ -3,6 +3,7 @@
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
+  irondash_engine_context
   webview_flutter_windows
 )
 
