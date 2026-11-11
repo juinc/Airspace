@@ -16,4 +16,5 @@ class AirspaceWebviewHost {
   Future<void> replanWeather() async {}
   Future<void> clearSelection() async {}
   Future<void> selectFlight(int index) async {}
+  Future<void> dispose() async {}
 }

@@ -128,6 +128,7 @@ let activeWeatherMeshKit;
 let weatherUpdateTimer;
 let weatherUpdateNumber = 0;
 let mapMesh;
+let terrainModel;
 let groundSampler = null;
 let requestId = 0;
 let activeScenarioController;
@@ -196,23 +197,32 @@ checkBackendHealth().then(health => {
     }
 });
 
-// Terrain attaches whenever it finishes — never blocks the first paint, and
-// airport alignment is a cheap in-place nudge via the O(1) height sampler.
-mapPromise.then(mapModel => {
-    if (mapMesh) return;
-    const payload = activePayload;
-    if (!payload) return;
+function attachTerrainModel() {
+    if (!terrainModel || !activePayload || mapMesh) return;
     try {
-        mapMesh = createMapMesh(mapModel, payload.grid, payload.meta && payload.meta.map_bounds);
+        mapMesh = createMapMesh(
+            terrainModel,
+            activePayload.grid,
+            activePayload.meta && activePayload.meta.map_bounds,
+        );
     } catch (error) {
         console.warn('Romania map unavailable:', error);
+        bridge.emit('airspace:error', { message: `Romania map unavailable: ${error.message}` });
         return;
     }
     scene.add(mapMesh);
     groundSampler = createTerrainHeightSampler(mapMesh, isLowEnd ? 64 : 96);
     if (activeDataGroup) alignAirportsToMap(activeDataGroup, groundSampler);
+}
+
+// Terrain and scenario data load independently. Retain the model if it wins
+// the race so a fast local GLB load cannot permanently skip the map.
+mapPromise.then(model => {
+    terrainModel = model;
+    attachTerrainModel();
 }, error => {
     console.warn('Romania map unavailable:', error);
+    bridge.emit('airspace:error', { message: `Romania map unavailable: ${error.message}` });
 });
 
 // ---------------------------------------------------------------------------
@@ -299,6 +309,7 @@ function applyScenePayload(payload, initialProgress = 0, includeWeather = true) 
     }
     activeDataGroup = nextGroup;
     activePayload = payload;
+    attachTerrainModel();
     scene.add(activeDataGroup);
     if (groundSampler) alignAirportsToMap(activeDataGroup, groundSampler);
 }

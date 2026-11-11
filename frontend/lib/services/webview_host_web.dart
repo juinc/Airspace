@@ -109,7 +109,7 @@ class AirspaceWebviewHost {
   Future<void> selectFlight(int index) =>
       dispatch({'type': 'airspace:selectFlight', 'index': index});
 
-  void dispose() {
-    _messageSubscription?.cancel();
+  Future<void> dispose() async {
+    await _messageSubscription?.cancel();
   }
 }

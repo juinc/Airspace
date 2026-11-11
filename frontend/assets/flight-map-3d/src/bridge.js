@@ -37,6 +37,11 @@ const OUTBOUND_CHANNELS = [
         }
     },
     message => {
+        if (window.chrome && window.chrome.webview) {
+            window.chrome.webview.postMessage(message);
+        }
+    },
+    message => {
         // Flutter web host — MUST be a string (see header comment).
         const json = JSON.stringify(message);
         if (window.parent && window.parent !== window) window.parent.postMessage(json, '*');
@@ -88,6 +93,10 @@ export function createBridge() {
         }
         dispatch(data);
     });
+
+    if (window.chrome && window.chrome.webview) {
+        window.chrome.webview.addEventListener('message', event => dispatch(event.data));
+    }
 
     // Direct-call surface for evaluateJavascript from Flutter.
     window.airspaceBridge = { dispatch };

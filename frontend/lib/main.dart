@@ -11,9 +11,12 @@ String resolveSceneUrl() {
       String.fromEnvironment('AIRSPACE_SCENE_PORT', defaultValue: '5173');
   const apiPort =
       String.fromEnvironment('AIRSPACE_API_PORT', defaultValue: '8000');
+  const configuredHost = String.fromEnvironment('AIRSPACE_DEV_HOST');
 
-  var host = 'localhost';
-  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+  var host = configuredHost.isNotEmpty ? configuredHost : 'localhost';
+  if (configuredHost.isEmpty &&
+      !kIsWeb &&
+      defaultTargetPlatform == TargetPlatform.android) {
     host = '10.0.2.2';
   }
   return 'http://$host:$scenePort/?api=http://$host:$apiPort';

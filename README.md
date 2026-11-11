@@ -100,6 +100,28 @@ Open `http://localhost:5173`. The scenario selector defaults to **"A lot
 more storms"** (see [Synthetic Weather Scenarios](#synthetic-weather-scenarios)
 below).
 
+### One-command Flutter development (Windows, web, Android)
+
+On Windows, start the backend, Three.js dev server, and Flutter together from
+the repository root:
+
+```powershell
+.\run_airspace.ps1 -Device windows
+```
+
+Use `-Device chrome` for Flutter web or `-Device <flutter-device-id>` for an
+Android emulator. For a physical phone on the same Wi-Fi, pass the computer's
+LAN address so the phone can reach both servers and the backend can allow the
+Vite origin:
+
+```powershell
+.\run_airspace.ps1 -Device <flutter-device-id> -DevHost 192.168.1.25
+```
+
+This is a development launcher. It reuses servers already responding on ports
+8000 and 5173, and stops only the server processes it started when Flutter
+exits. Android/iOS release builds should use HTTPS for a deployed backend.
+
 ### 3. Flutter app (production path)
 
 The Flutter app loads a **bundled, pre-built** copy of the Three.js scene as

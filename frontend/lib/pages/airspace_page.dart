@@ -148,6 +148,7 @@ class _AirspacePageState extends State<AirspacePage> {
     _watchdog?.cancel();
     _scenarioConfirmTimer?.cancel();
     _subscription?.cancel();
+    unawaited(_host.dispose());
     _bridge.dispose();
     super.dispose();
   }
