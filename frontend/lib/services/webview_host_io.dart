@@ -4,7 +4,8 @@ import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
-import 'package:webview_flutter_windows/webview_flutter_windows.dart' as windows_webview;
+import 'package:webview_flutter_windows/webview_flutter_windows.dart'
+    as windows_webview;
 
 import 'airspace_bridge_service.dart';
 
@@ -33,7 +34,8 @@ class AirspaceWebviewHost {
             return _WindowsWebViewError(error: snapshot.error.toString());
           }
           final controller = _windowsController;
-          if (snapshot.connectionState != ConnectionState.done || controller == null) {
+          if (snapshot.connectionState != ConnectionState.done ||
+              controller == null) {
             return const Center(child: CircularProgressIndicator());
           }
           return windows_webview.Webview(controller);
@@ -68,7 +70,9 @@ class AirspaceWebviewHost {
   Future<void> _initializeWindowsWebView(String url) async {
     final controller = windows_webview.WebviewController();
     _windowsController = controller;
-    _windowsMessageSubscription = controller.webMessage.listen(_handleWindowsMessage);
+    _windowsMessageSubscription = controller.webMessage.listen(
+      _handleWindowsMessage,
+    );
     await controller.initialize();
     await controller.setPopupWindowPolicy(
       windows_webview.WebviewPopupWindowPolicy.deny,
@@ -111,7 +115,9 @@ class AirspaceWebviewHost {
     final query = Map<String, String>.from(uri.queryParameters)
       ..['scenario'] = id;
     if (Platform.isWindows) {
-      await _windowsController?.loadUrl(uri.replace(queryParameters: query).toString());
+      await _windowsController?.loadUrl(
+        uri.replace(queryParameters: query).toString(),
+      );
       return;
     }
     final controller = _controller;
@@ -125,20 +131,24 @@ class AirspaceWebviewHost {
   }
 
   Future<void> loadScenario(String id, {double? routeProgress}) => dispatch({
-        'type': 'airspace:loadScenario',
-        'scenario': id,
-      ...?(routeProgress == null ? null : {'routeProgress': routeProgress}),
-      });
+    'type': 'airspace:loadScenario',
+    'scenario': id,
+    ...?(routeProgress == null ? null : {'routeProgress': routeProgress}),
+  });
 
   Future<void> setCameraPreset(String preset) =>
       dispatch({'type': 'airspace:setCamera', 'preset': preset});
 
-  Future<void> toggleLayer(String layer, bool visible) =>
-      dispatch({'type': 'airspace:toggleLayer', 'layer': layer, 'visible': visible});
+  Future<void> toggleLayer(String layer, bool visible) => dispatch({
+    'type': 'airspace:toggleLayer',
+    'layer': layer,
+    'visible': visible,
+  });
 
   Future<void> replanWeather() => dispatch({'type': 'airspace:replanWeather'});
 
-  Future<void> clearSelection() => dispatch({'type': 'airspace:clearSelection'});
+  Future<void> clearSelection() =>
+      dispatch({'type': 'airspace:clearSelection'});
 
   Future<void> selectFlight(int index) =>
       dispatch({'type': 'airspace:selectFlight', 'index': index});
@@ -151,16 +161,16 @@ class _WindowsWebViewError extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ColoredBox(
-        color: const Color(0xFF05080E),
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Text(
-              'Could not start the Windows WebView. Ensure the Microsoft Edge WebView2 Runtime is installed.\n\n$error',
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Color(0xFF8FA3B5), fontSize: 13),
-            ),
-          ),
+    color: const Color(0xFF05080E),
+    child: Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Text(
+          'Could not start the Windows WebView. Ensure the Microsoft Edge WebView2 Runtime is installed.\n\n$error',
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: Color(0xFF8FA3B5), fontSize: 13),
         ),
-      );
+      ),
+    ),
+  );
 }

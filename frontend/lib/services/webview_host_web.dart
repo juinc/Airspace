@@ -51,19 +51,18 @@ class AirspaceWebviewHost {
     if (!_registered) {
       _registered = true;
 
-      ui_web.platformViewRegistry.registerViewFactory(
-        'airspace_scene',
-        (int viewId) {
-          final iframe = html.IFrameElement()
-            ..src = url
-            ..style.border = 'none'
-            ..style.width = '100%'
-            ..style.height = '100%'
-            ..allow = 'fullscreen';
-          _iframe = iframe;
-          return iframe;
-        },
-      );
+      ui_web.platformViewRegistry.registerViewFactory('airspace_scene', (
+        int viewId,
+      ) {
+        final iframe = html.IFrameElement()
+          ..src = url
+          ..style.border = 'none'
+          ..style.width = '100%'
+          ..style.height = '100%'
+          ..allow = 'fullscreen';
+        _iframe = iframe;
+        return iframe;
+      });
     }
     return const HtmlElementView(viewType: 'airspace_scene');
   }
@@ -90,16 +89,19 @@ class AirspaceWebviewHost {
   }
 
   Future<void> loadScenario(String id, {double? routeProgress}) => dispatch({
-        'type': 'airspace:loadScenario',
-        'scenario': id,
-        if (routeProgress != null) 'routeProgress': routeProgress,
-      });
+    'type': 'airspace:loadScenario',
+    'scenario': id,
+    if (routeProgress != null) 'routeProgress': routeProgress,
+  });
 
   Future<void> setCameraPreset(String preset) =>
       dispatch({'type': 'airspace:setCamera', 'preset': preset});
 
-  Future<void> toggleLayer(String layer, bool visible) => dispatch(
-      {'type': 'airspace:toggleLayer', 'layer': layer, 'visible': visible});
+  Future<void> toggleLayer(String layer, bool visible) => dispatch({
+    'type': 'airspace:toggleLayer',
+    'layer': layer,
+    'visible': visible,
+  });
 
   Future<void> replanWeather() => dispatch({'type': 'airspace:replanWeather'});
 

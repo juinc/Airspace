@@ -27,9 +27,18 @@ class _AirspacePageState extends State<AirspacePage> {
   /// the dropdown is populated IMMEDIATELY — never empty, never dependent
   /// on the bridge arriving.
   static const List<ScenarioInfo> _knownScenarios = [
-    ScenarioInfo(id: 'crossroads-storm', title: 'Storm crossroads — 3 aircraft'),
-    ScenarioInfo(id: 'converge-bucharest', title: 'Converge on Bucharest — 4 aircraft'),
-    ScenarioInfo(id: 'carpathian-siege', title: 'Carpathian siege — triangle flights'),
+    ScenarioInfo(
+      id: 'crossroads-storm',
+      title: 'Storm crossroads — 3 aircraft',
+    ),
+    ScenarioInfo(
+      id: 'converge-bucharest',
+      title: 'Converge on Bucharest — 4 aircraft',
+    ),
+    ScenarioInfo(
+      id: 'carpathian-siege',
+      title: 'Carpathian siege — triangle flights',
+    ),
     ScenarioInfo(id: 'storm-wall', title: 'Storm wall'),
     ScenarioInfo(id: 'over-the-top', title: 'Over the top'),
     ScenarioInfo(id: 'low-corridor', title: 'Low corridor'),
@@ -66,9 +75,9 @@ class _AirspacePageState extends State<AirspacePage> {
       setState(() {
         _loadError = _sceneConnected
             ? 'Scene connected but no scenario loaded.\n'
-              'Is the backend running on port 8000?'
+                  'Is the backend running on port 8000?'
             : 'Scene did not respond at:\n${widget.sceneUrl}\n\n'
-              'Is the Vite dev server running in assets/flight-map-3d?';
+                  'Is the Vite dev server running in assets/flight-map-3d?';
       });
     });
   }
@@ -76,7 +85,9 @@ class _AirspacePageState extends State<AirspacePage> {
   void _onEvent(AirspaceEvent event) {
     switch (event) {
       case AirspaceReady():
-        debugPrint('[bridge] ready — ${event.scenarios.length} scenarios from scene');
+        debugPrint(
+          '[bridge] ready — ${event.scenarios.length} scenarios from scene',
+        );
         setState(() {
           if (event.scenarios.isNotEmpty) _scenarios = event.scenarios;
           _sceneConnected = true;
@@ -128,7 +139,9 @@ class _AirspacePageState extends State<AirspacePage> {
     _scenarioConfirmTimer = Timer(const Duration(seconds: 4), () {
       if (!mounted) return;
       if (_selectedScenario == id && _payload?.scenario != id) {
-        debugPrint('[bridge] no confirm for $id — reloading scene via URL param');
+        debugPrint(
+          '[bridge] no confirm for $id — reloading scene via URL param',
+        );
         _host.reloadWithScenario(id);
       }
     });
@@ -177,16 +190,20 @@ class _AirspacePageState extends State<AirspacePage> {
                         ? Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              const Icon(Icons.cloud_off,
-                                  color: Color(0xFFE2836F), size: 36),
+                              const Icon(
+                                Icons.cloud_off,
+                                color: Color(0xFFE2836F),
+                                size: 36,
+                              ),
                               const SizedBox(height: 14),
                               Text(
                                 _loadError!,
                                 textAlign: TextAlign.center,
                                 style: const TextStyle(
-                                    fontSize: 12.5,
-                                    color: Color(0xFF8FA3B5),
-                                    height: 1.6),
+                                  fontSize: 12.5,
+                                  color: Color(0xFF8FA3B5),
+                                  height: 1.6,
+                                ),
                               ),
                             ],
                           )
@@ -196,16 +213,20 @@ class _AirspacePageState extends State<AirspacePage> {
                               const Text(
                                 'AIRSPACE',
                                 style: TextStyle(
-                                    fontSize: 30,
-                                    fontWeight: FontWeight.w200,
-                                    letterSpacing: 8,
-                                    color: Color(0xFFE9EEF4)),
+                                  fontSize: 30,
+                                  fontWeight: FontWeight.w200,
+                                  letterSpacing: 8,
+                                  color: Color(0xFFE9EEF4),
+                                ),
                               ),
                               const SizedBox(height: 14),
-                              Text(_statusText,
-                                  style: const TextStyle(
-                                      fontSize: 11,
-                                      color: Color(0xFF8FA3B5))),
+                              Text(
+                                _statusText,
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  color: Color(0xFF8FA3B5),
+                                ),
+                              ),
                               const SizedBox(height: 14),
                               const SizedBox(
                                 width: 180,
@@ -233,12 +254,13 @@ class _AirspacePageState extends State<AirspacePage> {
                     Expanded(
                       child: Container(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 8),
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
                         decoration: BoxDecoration(
                           color: const Color(0xB80D141E),
                           borderRadius: BorderRadius.circular(10),
-                          border:
-                              Border.all(color: const Color(0x17FFFFFF)),
+                          border: Border.all(color: const Color(0x17FFFFFF)),
                         ),
                         child: Row(
                           children: [
@@ -250,7 +272,9 @@ class _AirspacePageState extends State<AirspacePage> {
                                 shape: BoxShape.circle,
                                 boxShadow: [
                                   BoxShadow(
-                                      color: Color(0xFF6FD6A0), blurRadius: 8)
+                                    color: Color(0xFF6FD6A0),
+                                    blurRadius: 8,
+                                  ),
                                 ],
                               ),
                             ),
@@ -260,7 +284,9 @@ class _AirspacePageState extends State<AirspacePage> {
                                 _statusLine,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
-                                    fontSize: 11, color: Color(0xFF8FA3B5)),
+                                  fontSize: 11,
+                                  color: Color(0xFF8FA3B5),
+                                ),
                               ),
                             ),
                           ],
@@ -310,8 +336,7 @@ class _AirspacePageState extends State<AirspacePage> {
                 child: PointerInterceptor(
                   child: AircraftStatusCard(
                     state: _flightState!,
-                    aircraft:
-                        _payload?.aircraft ?? const AircraftProfileInfo(),
+                    aircraft: _payload?.aircraft ?? const AircraftProfileInfo(),
                     flightCount: _payload?.flightCount ?? 1,
                     flights: _payload?.flights ?? const [],
                     selectedIndex: _selectedFlight,

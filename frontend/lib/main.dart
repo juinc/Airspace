@@ -7,10 +7,14 @@ import 'pages/airspace_page.dart';
 /// Scene URL per environment, including the backend API base so the scene
 /// works on Android emulators (10.0.2.2 is the host machine's loopback).
 String resolveSceneUrl() {
-  const scenePort =
-      String.fromEnvironment('AIRSPACE_SCENE_PORT', defaultValue: '5173');
-  const apiPort =
-      String.fromEnvironment('AIRSPACE_API_PORT', defaultValue: '8000');
+  const scenePort = String.fromEnvironment(
+    'AIRSPACE_SCENE_PORT',
+    defaultValue: '5173',
+  );
+  const apiPort = String.fromEnvironment(
+    'AIRSPACE_API_PORT',
+    defaultValue: '8000',
+  );
   const configuredHost = String.fromEnvironment('AIRSPACE_DEV_HOST');
 
   var host = configuredHost.isNotEmpty ? configuredHost : 'localhost';
